@@ -214,7 +214,20 @@ pub struct EcuEmulatorManager {
 }
 
 impl EcuEmulatorManager {
-    /// Start the emulator manager with the specified ECUs.
+    /// Create a software-routing-only emulator (no background thread).
+    /// Requests are handled synchronously via try_handle() — no J2534 race condition.
+    pub fn new(ecus: Vec<EcuId>) -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: ecus,
+        }
+    }
+
+    /// Start the emulator manager with the specified ECUs and a CAN bus reader thread.
+    /// NOTE: The reader thread consumes ALL messages from the J2534 buffer,
+    /// which breaks reads for non-emulated ECUs. Prefer `new()` + software routing.
+    #[allow(dead_code)]
     pub fn start(
         lib: &Arc<crate::j2534::dll::J2534Lib>,
         channel_id: u32,

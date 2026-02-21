@@ -242,7 +242,6 @@ pub fn toggle_bench_mode(
 ) -> Result<(), String> {
     let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_mut().ok_or("Not connected")?;
-    let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     if enabled {
         if conn.emulator_manager.is_some() {
@@ -261,12 +260,8 @@ pub fn toggle_bench_mode(
         }
 
         let ecu_names: Vec<String> = ecu_ids.iter().map(|e| e.name().to_string()).collect();
-        let manager = crate::ecu_emulator::EcuEmulatorManager::start(
-            &conn.lib,
-            channel.channel_id(),
-            app.clone(),
-            ecu_ids,
-        );
+        // Software routing only — no background thread that would consume J2534 messages
+        let manager = crate::ecu_emulator::EcuEmulatorManager::new(ecu_ids);
         conn.emulator_manager = Some(manager);
         emit_log_simple(
             &app,
