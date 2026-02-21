@@ -1,0 +1,636 @@
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::j2534::dll;
+use crate::j2534::types::*;
+use crate::state::{AppState, Connection};
+use crate::uds::client::{LogDirection, LogEntry};
+use crate::uds::services::{did, ecu_addr, routine, SshResult};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub firmware_version: String,
+    pub dll_version: String,
+    pub api_version: String,
+    pub dll_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VehicleInfo {
+    pub vin: Option<String>,
+    pub voltage: Option<f32>,
+    pub master_part: Option<String>,
+    pub v850_part: Option<String>,
+    pub tuner_part: Option<String>,
+    pub serial: Option<String>,
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoutineInfo {
+    pub routine_id: u16,
+    pub name: String,
+    pub description: String,
+    pub category: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RoutineResponse {
+    pub success: bool,
+    pub description: String,
+    pub raw_data: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct J2534DeviceEntry {
+    pub name: String,
+    pub dll_path: String,
+}
+
+fn emit_log(app: &AppHandle, entry: LogEntry) {
+    let _ = app.emit("uds-log", entry);
+}
+
+fn emit_log_simple(app: &AppHandle, direction: LogDirection, data: &[u8], description: &str) {
+    emit_log(
+        app,
+        LogEntry {
+            direction,
+            data_hex: data
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(" "),
+            timestamp: chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            description: description.to_string(),
+        },
+    );
+}
+
+/// Discover available J2534 devices from the Windows registry
+#[tauri::command]
+pub fn discover_devices() -> Vec<J2534DeviceEntry> {
+    dll::discover_j2534_dlls()
+        .into_iter()
+        .map(|(name, path)| J2534DeviceEntry {
+            name,
+            dll_path: path.to_string_lossy().to_string(),
+        })
+        .collect()
+}
+
+/// Connect to J2534 device
+#[tauri::command]
+pub fn connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    dll_path: Option<String>,
+) -> Result<DeviceInfo, String> {
+    let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
+
+    if conn.is_some() {
+        return Err("Already connected. Disconnect first.".into());
+    }
+
+    let path = dll_path.unwrap_or_else(|| {
+        dll::default_mongoose_dll_path()
+            .to_string_lossy()
+            .to_string()
+    });
+
+    emit_log_simple(
+        &app,
+        LogDirection::Tx,
+        &[],
+        &format!("Loading J2534 DLL: {}", path),
+    );
+
+    let lib = Arc::new(dll::J2534Lib::load(&path)?);
+    let device = crate::j2534::device::J2534Device::open(lib.clone())?;
+
+    let version = device.read_version()?;
+
+    emit_log_simple(
+        &app,
+        LogDirection::Rx,
+        &[],
+        &format!(
+            "Connected. FW: {}, DLL: {}, API: {}",
+            version.firmware, version.dll, version.api
+        ),
+    );
+
+    // Connect ISO15765 channel at 500kbps
+    let channel = device.connect_iso15765(500000)?;
+
+    // Setup flow control filter for IMC
+    channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX)?;
+
+    // Setup flow control filter for BCM (multi-ECU DID reading + bench mode emulation)
+    channel.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX)?;
+
+    emit_log_simple(
+        &app,
+        LogDirection::Rx,
+        &[],
+        "ISO15765 channel connected, IMC + BCM filters set",
+    );
+
+    let info = DeviceInfo {
+        firmware_version: version.firmware.clone(),
+        dll_version: version.dll.clone(),
+        api_version: version.api.clone(),
+        dll_path: path.clone(),
+    };
+
+    *conn = Some(Connection {
+        lib,
+        device,
+        channel: Some(channel),
+        dll_path: path,
+        bcm_emulator: None,
+    });
+
+    Ok(info)
+}
+
+/// Disconnect from J2534 device
+#[tauri::command]
+pub fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
+
+    if conn.is_none() {
+        // Already disconnected — idempotent
+        return Ok(());
+    }
+
+    // Drop connection (RAII will close channel and device)
+    *conn = None;
+
+    emit_log_simple(&app, LogDirection::Tx, &[], "Disconnected from J2534 device");
+    Ok(())
+}
+
+/// Toggle bench mode (BCM emulation)
+#[tauri::command]
+pub fn toggle_bench_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_mut().ok_or("Not connected")?;
+    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+
+    if enabled {
+        if conn.bcm_emulator.is_some() {
+            return Ok(()); // Already running
+        }
+        let emulator = crate::bcm_emulator::BcmEmulator::start(
+            &conn.lib,
+            channel.channel_id(),
+            app.clone(),
+        );
+        conn.bcm_emulator = Some(emulator);
+        emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode ON — BCM emulation active");
+    } else {
+        if let Some(mut emu) = conn.bcm_emulator.take() {
+            emu.stop();
+        }
+        emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — BCM emulation stopped");
+    }
+
+    Ok(())
+}
+
+/// Read vehicle info from ECU
+#[tauri::command]
+pub fn read_vehicle_info(app: AppHandle, state: State<'_, AppState>) -> Result<VehicleInfo, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+
+    // We can't move the channel into UdsClient, so we need to create a temporary client
+    // For now, build the messages manually
+    let mut info = VehicleInfo {
+        vin: None,
+        voltage: None,
+        master_part: None,
+        v850_part: None,
+        tuner_part: None,
+        serial: None,
+        session: None,
+    };
+
+    // Read VIN
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::VIN) {
+        Ok(data) => {
+            info.vin = Some(String::from_utf8_lossy(&data).trim().to_string());
+        }
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("VIN read failed: {}", e)),
+    }
+
+    // Read battery voltage from BCM
+    match send_read_did_on_ecu(&app, channel, ecu_addr::BCM_TX, ecu_addr::BCM_RX, did::BATTERY_VOLTAGE) {
+        Ok(data) => {
+            if data.len() >= 2 {
+                let raw = ((data[0] as u16) << 8 | data[1] as u16) as f32;
+                info.voltage = Some(raw * 0.1);
+            }
+        }
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Voltage read failed: {}", e)),
+    }
+
+    // Read part numbers
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::MASTER_RPM_PART) {
+        Ok(data) => info.master_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F188 failed: {}", e)),
+    }
+
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::V850_PART) {
+        Ok(data) => info.v850_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F120 failed: {}", e)),
+    }
+
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::TUNER_PART) {
+        Ok(data) => info.tuner_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F121 failed: {}", e)),
+    }
+
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::ECU_SERIAL) {
+        Ok(data) => info.serial = Some(String::from_utf8_lossy(&data).trim().to_string()),
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Serial F18C failed: {}", e)),
+    }
+
+    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::ACTIVE_DIAG_SESSION) {
+        Ok(data) => {
+            if !data.is_empty() {
+                let session_str = match data[0] {
+                    0x01 => "Default",
+                    0x02 => "Programming",
+                    0x03 => "Extended",
+                    _ => "Unknown",
+                };
+                info.session = Some(format!("{} (0x{:02X})", session_str, data[0]));
+            }
+        }
+        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Session D100 failed: {}", e)),
+    }
+
+    Ok(info)
+}
+
+/// Enable SSH on IMC
+#[tauri::command]
+pub fn enable_ssh(app: AppHandle, state: State<'_, AppState>) -> Result<SshResult, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+
+    // Step 1: TesterPresent
+    emit_log_simple(&app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent");
+    send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false)
+        .map_err(|e| format!("TesterPresent failed: {}", e))?;
+
+    // Step 2: Extended session
+    emit_log_simple(&app, LogDirection::Tx, &[0x10, 0x03], "DiagnosticSessionControl Extended");
+    send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false)
+        .map_err(|e| format!("Extended session failed: {}", e))?;
+
+    // Step 3: Security Access
+    emit_log_simple(&app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed");
+    let seed_resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x27, 0x11], false)
+        .map_err(|e| format!("Security seed request failed: {}", e))?;
+
+    if seed_resp.len() >= 5 {
+        let seed = &seed_resp[2..5];
+        let seed_int = ((seed[0] as u32) << 16) | ((seed[1] as u32) << 8) | (seed[2] as u32);
+
+        if seed_int != 0 {
+            let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
+            let key_bytes = [
+                ((key_int >> 16) & 0xFF) as u8,
+                ((key_int >> 8) & 0xFF) as u8,
+                (key_int & 0xFF) as u8,
+            ];
+
+            let mut key_request = vec![0x27, 0x12];
+            key_request.extend_from_slice(&key_bytes);
+            emit_log_simple(&app, LogDirection::Tx, &key_request, "SecurityAccess SendKey");
+            send_uds_request(&app, channel, ecu_addr::IMC_TX, &key_request, false)
+                .map_err(|e| format!("Security key send failed: {}", e))?;
+        }
+    }
+
+    // Step 4: Routine 0x603E SSH Enable
+    let routine_request = vec![0x31, 0x01, 0x60, 0x3E, 0x01];
+    emit_log_simple(&app, LogDirection::Tx, &routine_request, "RoutineControl SSH Enable");
+    let routine_resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &routine_request, true)
+        .map_err(|e| format!("SSH routine failed: {}", e))?;
+
+    let success = !routine_resp.is_empty() && routine_resp[0] == 0x71;
+    Ok(SshResult {
+        success,
+        ip_address: "192.168.103.11".to_string(),
+        message: if success {
+            "SSH ENABLED — Connect: root@192.168.103.11".to_string()
+        } else {
+            format!(
+                "Routine response: {}",
+                routine_resp
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        },
+    })
+}
+
+/// Run a generic routine
+#[tauri::command]
+pub fn run_routine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    routine_id: u16,
+    data: Vec<u8>,
+) -> Result<RoutineResponse, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+
+    let mut request = vec![0x31, 0x01, (routine_id >> 8) as u8, (routine_id & 0xFF) as u8];
+    request.extend_from_slice(&data);
+
+    let needs_pending = matches!(routine_id, 0x603E | 0x6038 | 0x0E00 | 0x0E01 | 0x0E02);
+    let resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &request, needs_pending)
+        .map_err(|e| format!("Routine 0x{:04X} failed: {}", routine_id, e))?;
+
+    let raw_data = if resp.len() > 4 {
+        resp[4..].to_vec()
+    } else {
+        vec![]
+    };
+
+    let success = !resp.is_empty() && resp[0] == 0x71;
+    let description = if success {
+        format!(
+            "Routine 0x{:04X} OK: {}",
+            routine_id,
+            raw_data
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    } else {
+        format!("Routine 0x{:04X} failed", routine_id)
+    };
+
+    Ok(RoutineResponse {
+        success,
+        description,
+        raw_data,
+    })
+}
+
+/// Read a single DID
+#[tauri::command]
+pub fn read_did(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ecu_tx: u32,
+    did_id: u16,
+) -> Result<Vec<u8>, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+
+    let data = send_read_did(&app, channel, ecu_tx, did_id)?;
+    Ok(data)
+}
+
+/// List available routines
+#[tauri::command]
+pub fn list_routines() -> Vec<RoutineInfo> {
+    vec![
+        // Diagnostics
+        RoutineInfo {
+            routine_id: routine::SSH_ENABLE,
+            name: "SSH Enable".into(),
+            description: "Enable SSH access on IMC (0x603E)".into(),
+            category: "Diagnostics".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::ENG_SCREEN_LVL2,
+            name: "Engineering Screen Level 2".into(),
+            description: "Enable engineering screen level 2 (0x603D)".into(),
+            category: "Diagnostics".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::POWER_OVERRIDE,
+            name: "IMC Power Override".into(),
+            description: "Override IMC power state (0x6043)".into(),
+            category: "Diagnostics".into(),
+        },
+        // Configuration
+        RoutineInfo {
+            routine_id: routine::CONFIGURE_LINUX,
+            name: "Configure Linux to Hardware".into(),
+            description: "Reconfigure IMC Linux environment (0x6038)".into(),
+            category: "Configuration".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::VIN_LEARN,
+            name: "VIN Learn".into(),
+            description: "Learn VIN to ECU (0x0404)".into(),
+            category: "Configuration".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::RETRIEVE_CCF,
+            name: "Retrieve CCF".into(),
+            description: "Retrieve Central Configuration (0x0E00)".into(),
+            category: "Configuration".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::REPORT_CCF,
+            name: "Report CCF".into(),
+            description: "Report Central Configuration (0x0E01)".into(),
+            category: "Configuration".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::LIST_CCF,
+            name: "List CCF".into(),
+            description: "List Central Configuration (0x0E02)".into(),
+            category: "Configuration".into(),
+        },
+        // Recovery
+        RoutineInfo {
+            routine_id: routine::DVD_RECOVER,
+            name: "Recover Locked DVD Region".into(),
+            description: "Recover locked DVD region (0x603F)".into(),
+            category: "Recovery".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::RESET_PIN,
+            name: "Reset Customer Pin".into(),
+            description: "Reset customer PIN code (0x6042)".into(),
+            category: "Recovery".into(),
+        },
+        // Advanced
+        RoutineInfo {
+            routine_id: routine::FAN_CONTROL,
+            name: "Control Auxiliary Fan".into(),
+            description: "Control auxiliary fan (0x6041)".into(),
+            category: "Advanced".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::GEN_KEY,
+            name: "Generate Key".into(),
+            description: "Generate cryptographic key (0x6045)".into(),
+            category: "Advanced".into(),
+        },
+        RoutineInfo {
+            routine_id: routine::SHARED_SECRET,
+            name: "Shared Secret".into(),
+            description: "Compute shared secret (0x6046)".into(),
+            category: "Advanced".into(),
+        },
+    ]
+}
+
+// ─── Internal helpers ───────────────────────────────────────────────
+
+/// Send raw UDS request on a channel and get response
+fn send_uds_request(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    tx_id: u32,
+    request: &[u8],
+    wait_pending: bool,
+) -> Result<Vec<u8>, String> {
+    // Build and send ISO15765 message
+    let msg = PassThruMsg::new_iso15765(tx_id, request);
+    channel.send(&msg, 2000)?;
+
+    let timeout = if wait_pending {
+        std::time::Duration::from_secs(30)
+    } else {
+        std::time::Duration::from_secs(5)
+    };
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed() > timeout {
+            return Err("Timeout waiting for response".into());
+        }
+
+        let msgs = channel.read(500)?;
+        for m in msgs {
+            if m.data_size <= 4 {
+                continue;
+            }
+            let payload = m.payload();
+            if payload.is_empty() {
+                continue;
+            }
+
+            // Log received data
+            emit_log_simple(app, LogDirection::Rx, payload, "");
+
+            // Negative response
+            if payload[0] == 0x7F && payload.len() >= 3 {
+                if payload[2] == 0x78 {
+                    emit_log_simple(app, LogDirection::Pending, payload, "Response pending...");
+                    continue; // Keep waiting
+                }
+                let nrc = crate::uds::error::NegativeResponseCode::from_byte(payload[2]);
+                return Err(format!("NRC: {}", nrc));
+            }
+
+            // Positive response
+            let expected = request[0] + 0x40;
+            if payload[0] == expected {
+                return Ok(payload.to_vec());
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Read a DID on the default IMC channel
+fn send_read_did(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    tx_id: u32,
+    did_id: u16,
+) -> Result<Vec<u8>, String> {
+    let request = vec![0x22, (did_id >> 8) as u8, (did_id & 0xFF) as u8];
+    emit_log_simple(
+        app,
+        LogDirection::Tx,
+        &request,
+        &format!("ReadDID 0x{:04X}", did_id),
+    );
+    let resp = send_uds_request(app, channel, tx_id, &request, false)?;
+    // Return data after service ID + DID
+    if resp.len() > 3 {
+        Ok(resp[3..].to_vec())
+    } else {
+        Ok(vec![])
+    }
+}
+
+/// Read a DID on a different ECU (BCM filter is set up at connect time)
+fn send_read_did_on_ecu(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    ecu_tx: u32,
+    _ecu_rx: u32,
+    did_id: u16,
+) -> Result<Vec<u8>, String> {
+    send_read_did(app, channel, ecu_tx, did_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_routines_not_empty() {
+        let routines = list_routines();
+        assert!(!routines.is_empty());
+        assert!(routines.iter().any(|r| r.routine_id == 0x6038));
+        assert!(routines.iter().any(|r| r.routine_id == 0x603E));
+        assert!(routines.iter().any(|r| r.routine_id == 0x0404));
+        // New routines
+        assert!(routines.iter().any(|r| r.routine_id == 0x6045));
+        assert!(routines.iter().any(|r| r.routine_id == 0x6046));
+        assert!(routines.iter().any(|r| r.routine_id == 0x0E00));
+        assert!(routines.iter().any(|r| r.routine_id == 0x0E01));
+        assert!(routines.iter().any(|r| r.routine_id == 0x0E02));
+    }
+
+    #[test]
+    fn test_list_routines_have_categories() {
+        let routines = list_routines();
+        for r in &routines {
+            assert!(!r.category.is_empty(), "Routine 0x{:04X} missing category", r.routine_id);
+        }
+        assert!(routines.iter().any(|r| r.category == "Diagnostics"));
+        assert!(routines.iter().any(|r| r.category == "Configuration"));
+        assert!(routines.iter().any(|r| r.category == "Recovery"));
+        assert!(routines.iter().any(|r| r.category == "Advanced"));
+    }
+
+    #[test]
+    fn test_discover_devices_non_windows() {
+        // On non-Windows, returns empty
+        let devices = discover_devices();
+        // May or may not be empty depending on platform
+        let _ = devices;
+    }
+}
