@@ -106,4 +106,23 @@ describe("ConnectPanel", () => {
       expect(screen.getByText("Connection failed")).toBeInTheDocument();
     });
   });
+
+  it("shows per-ECU checkboxes when connected", () => {
+    render(
+      <ConnectPanel
+        {...defaultProps}
+        connected={true}
+        deviceInfo={{
+          firmware_version: "1.0",
+          dll_version: "1.0",
+          api_version: "04.04",
+          dll_path: "test.dll",
+        }}
+      />
+    );
+    expect(screen.getByText("BCM")).toBeInTheDocument();
+    expect(screen.getByText("GWM")).toBeInTheDocument();
+    expect(screen.getByText("IPC")).toBeInTheDocument();
+    expect(screen.getByText("Bench Mode (ECU Emulation)")).toBeInTheDocument();
+  });
 });

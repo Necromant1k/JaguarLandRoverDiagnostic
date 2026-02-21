@@ -1,4 +1,4 @@
-pub mod bcm_emulator;
+pub mod ecu_emulator;
 pub mod commands;
 pub mod j2534;
 pub mod state;
@@ -16,6 +16,7 @@ pub fn run() {
             commands::connect,
             commands::disconnect,
             commands::toggle_bench_mode,
+            commands::get_bench_mode_status,
             commands::read_vehicle_info,
             commands::enable_ssh,
             commands::run_routine,

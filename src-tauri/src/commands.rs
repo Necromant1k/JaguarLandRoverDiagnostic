@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::ecu_emulator::EcuId;
 use crate::j2534::dll;
 use crate::j2534::types::*;
 use crate::state::{AppState, Connection};
@@ -133,11 +134,15 @@ pub fn connect(
     // Setup flow control filter for BCM (multi-ECU DID reading + bench mode emulation)
     channel.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX)?;
 
+    // Setup flow control filters for GWM and IPC
+    channel.setup_iso15765_filter(ecu_addr::GWM_TX, ecu_addr::GWM_RX)?;
+    channel.setup_iso15765_filter(ecu_addr::IPC_TX, ecu_addr::IPC_RX)?;
+
     emit_log_simple(
         &app,
         LogDirection::Rx,
         &[],
-        "ISO15765 channel connected, IMC + BCM filters set",
+        "ISO15765 channel connected, IMC + BCM + GWM + IPC filters set",
     );
 
     let info = DeviceInfo {
@@ -152,7 +157,7 @@ pub fn connect(
         device,
         channel: Some(channel),
         dll_path: path,
-        bcm_emulator: None,
+        emulator_manager: None,
     });
 
     Ok(info)
@@ -175,36 +180,81 @@ pub fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<(), Stri
     Ok(())
 }
 
-/// Toggle bench mode (BCM emulation)
+/// Bench mode status returned to frontend
+#[derive(Debug, Serialize)]
+pub struct BenchModeStatus {
+    pub enabled: bool,
+    pub emulated_ecus: Vec<String>,
+}
+
+/// Toggle bench mode (multi-ECU emulation)
 #[tauri::command]
 pub fn toggle_bench_mode(
     app: AppHandle,
     state: State<'_, AppState>,
     enabled: bool,
+    ecus: Option<Vec<String>>,
 ) -> Result<(), String> {
     let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_mut().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     if enabled {
-        if conn.bcm_emulator.is_some() {
+        if conn.emulator_manager.is_some() {
             return Ok(()); // Already running
         }
-        let emulator = crate::bcm_emulator::BcmEmulator::start(
+
+        // Parse ECU list, default to BCM only
+        let ecu_ids: Vec<EcuId> = ecus
+            .unwrap_or_else(|| vec!["bcm".to_string()])
+            .iter()
+            .filter_map(|s| EcuId::from_str(s))
+            .collect();
+
+        if ecu_ids.is_empty() {
+            return Err("No valid ECU IDs specified".into());
+        }
+
+        let ecu_names: Vec<String> = ecu_ids.iter().map(|e| e.name().to_string()).collect();
+        let manager = crate::ecu_emulator::EcuEmulatorManager::start(
             &conn.lib,
             channel.channel_id(),
             app.clone(),
+            ecu_ids,
         );
-        conn.bcm_emulator = Some(emulator);
-        emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode ON — BCM emulation active");
+        conn.emulator_manager = Some(manager);
+        emit_log_simple(
+            &app,
+            LogDirection::Rx,
+            &[],
+            &format!("Bench mode ON — emulating: {}", ecu_names.join(", ")),
+        );
     } else {
-        if let Some(mut emu) = conn.bcm_emulator.take() {
-            emu.stop();
+        if let Some(mut mgr) = conn.emulator_manager.take() {
+            mgr.stop();
         }
-        emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — BCM emulation stopped");
+        emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — emulation stopped");
     }
 
     Ok(())
+}
+
+/// Get bench mode status
+#[tauri::command]
+pub fn get_bench_mode_status(state: State<'_, AppState>) -> Result<BenchModeStatus, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+
+    match &conn.emulator_manager {
+        Some(mgr) => Ok(BenchModeStatus {
+            enabled: true,
+            emulated_ecus: mgr.emulated_ecus().iter().map(|e| e.name().to_lowercase()).collect(),
+        }),
+        None => Ok(BenchModeStatus {
+            enabled: false,
+            emulated_ecus: vec![],
+        }),
+    }
 }
 
 /// Read vehicle info from ECU

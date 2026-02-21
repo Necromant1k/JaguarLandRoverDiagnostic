@@ -9,6 +9,12 @@ interface Props {
   onDisconnected: () => void;
 }
 
+const ECU_OPTIONS = [
+  { id: "bcm", label: "BCM", address: "0x726" },
+  { id: "gwm", label: "GWM", address: "0x716" },
+  { id: "ipc", label: "IPC", address: "0x720" },
+] as const;
+
 export default function ConnectPanel({
   connected,
   deviceInfo,
@@ -22,6 +28,9 @@ export default function ConnectPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [benchMode, setBenchMode] = useState(false);
+  const [selectedEcus, setSelectedEcus] = useState<Set<string>>(
+    new Set(["bcm"])
+  );
 
   useEffect(() => {
     api.discoverDevices().then(setDevices).catch(() => {});
@@ -45,6 +54,7 @@ export default function ConnectPanel({
     setError(null);
     try {
       await api.disconnect();
+      setBenchMode(false);
       onDisconnected();
     } catch (e) {
       setError(String(e));
@@ -56,11 +66,27 @@ export default function ConnectPanel({
   const handleBenchToggle = async () => {
     const newValue = !benchMode;
     try {
-      await api.toggleBenchMode(newValue);
+      const ecus = Array.from(selectedEcus);
+      await api.toggleBenchMode(newValue, ecus);
       setBenchMode(newValue);
     } catch (e) {
       setError(String(e));
     }
+  };
+
+  const handleEcuToggle = (ecuId: string) => {
+    setSelectedEcus((prev) => {
+      const next = new Set(prev);
+      if (next.has(ecuId)) {
+        // Don't allow deselecting all
+        if (next.size > 1) {
+          next.delete(ecuId);
+        }
+      } else {
+        next.add(ecuId);
+      }
+      return next;
+    });
   };
 
   return (
@@ -141,14 +167,14 @@ export default function ConnectPanel({
 
       {/* Bench Mode */}
       {connected && (
-        <div className="card">
+        <div className="card space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-gray-300">
-                Bench Mode (BCM Emulation)
+                Bench Mode (ECU Emulation)
               </h3>
               <p className="text-xs text-gray-500 mt-0.5">
-                Emulate BCM on CAN bus for bench testing without vehicle
+                Emulate ECUs on CAN bus for bench testing without vehicle
               </p>
             </div>
             <button
@@ -163,6 +189,26 @@ export default function ConnectPanel({
                 }`}
               />
             </button>
+          </div>
+
+          {/* Per-ECU checkboxes */}
+          <div className="space-y-1.5 pl-1">
+            {ECU_OPTIONS.map((ecu) => (
+              <label
+                key={ecu.id}
+                className="flex items-center gap-2 text-xs cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedEcus.has(ecu.id)}
+                  onChange={() => handleEcuToggle(ecu.id)}
+                  disabled={benchMode}
+                  className="accent-accent"
+                />
+                <span className="text-gray-300">{ecu.label}</span>
+                <span className="text-gray-600 font-mono">({ecu.address})</span>
+              </label>
+            ))}
           </div>
         </div>
       )}

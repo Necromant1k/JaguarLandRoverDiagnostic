@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::bcm_emulator::BcmEmulator;
+use crate::ecu_emulator::EcuEmulatorManager;
 use crate::j2534::device::{J2534Channel, J2534Device};
 use crate::j2534::dll::J2534Lib;
 
@@ -10,7 +10,7 @@ pub struct Connection {
     pub device: J2534Device,
     pub channel: Option<J2534Channel>,
     pub dll_path: String,
-    pub bcm_emulator: Option<BcmEmulator>,
+    pub emulator_manager: Option<EcuEmulatorManager>,
 }
 
 /// Global app state managed by Tauri

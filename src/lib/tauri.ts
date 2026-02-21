@@ -6,6 +6,7 @@ import type {
   RoutineInfo,
   RoutineResponse,
   J2534DeviceEntry,
+  BenchModeStatus,
 } from "../types";
 
 export async function discoverDevices(): Promise<J2534DeviceEntry[]> {
@@ -20,8 +21,15 @@ export async function disconnect(): Promise<void> {
   return invoke<void>("disconnect");
 }
 
-export async function toggleBenchMode(enabled: boolean): Promise<void> {
-  return invoke<void>("toggle_bench_mode", { enabled });
+export async function toggleBenchMode(
+  enabled: boolean,
+  ecus?: string[]
+): Promise<void> {
+  return invoke<void>("toggle_bench_mode", { enabled, ecus });
+}
+
+export async function getBenchModeStatus(): Promise<BenchModeStatus> {
+  return invoke<BenchModeStatus>("get_bench_mode_status");
 }
 
 export async function readVehicleInfo(): Promise<VehicleInfo> {

@@ -48,4 +48,9 @@ export interface LogEntry {
   description: string;
 }
 
+export interface BenchModeStatus {
+  enabled: boolean;
+  emulated_ecus: string[];
+}
+
 export type Tab = "connect" | "vehicle" | "ssh" | "imc";
