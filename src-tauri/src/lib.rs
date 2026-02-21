@@ -76,13 +76,16 @@ pub fn run() {
         .setup(|_app| {
             log::info!("Tauri setup hook running");
 
-            // Open devtools in debug builds
-            #[cfg(debug_assertions)]
+            // Always open devtools for debugging
             {
                 use tauri::Manager;
-                log::info!("Debug build — opening devtools");
-                let window = _app.get_webview_window("main").unwrap();
-                window.open_devtools();
+                log::info!("Opening devtools");
+                if let Some(window) = _app.get_webview_window("main") {
+                    window.open_devtools();
+                    log::info!("Devtools opened");
+                } else {
+                    log::error!("Could not find main window!");
+                }
             }
 
             log::info!("Setup complete, window should be visible");
