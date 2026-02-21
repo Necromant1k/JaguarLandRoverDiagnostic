@@ -1,5 +1,2 @@
-[env]
-CC = { value = "/usr/bin/cc", force = true }
-
-[target.aarch64-apple-darwin]
-linker = "/usr/bin/cc"
+[build]
+jobs = 2

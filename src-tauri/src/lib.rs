@@ -8,12 +8,54 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize env_logger — writes to stderr which Tauri captures
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
+    // Initialize logging — write to stderr + file (C:\udsapp\udsapp.log on Windows)
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("debug")
+    );
+    builder.format_timestamp_millis();
 
+    // Also write logs to file
+    #[cfg(target_os = "windows")]
+    {
+        use std::io::Write;
+        let log_path = std::path::Path::new(r"C:\udsapp\udsapp.log");
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let file = std::sync::Mutex::new(file);
+            builder.format(move |_buf, record| {
+                let msg = format!(
+                    "{} [{}] {}: {}\n",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+                // Write to both stderr and file
+                let _ = std::io::stderr().write_all(msg.as_bytes());
+                if let Ok(mut f) = file.lock() {
+                    let _ = f.write_all(msg.as_bytes());
+                    let _ = f.flush();
+                }
+                Ok(())
+            });
+        }
+    }
+
+    builder.init();
+
+    log::info!("========================================");
     log::info!("UDS App starting");
+    log::info!("Version: {}", env!("CARGO_PKG_VERSION"));
+    log::info!("OS: {}", std::env::consts::OS);
+    log::info!("Arch: {}", std::env::consts::ARCH);
+    log::info!("CWD: {:?}", std::env::current_dir().unwrap_or_default());
+    log::info!("EXE: {:?}", std::env::current_exe().unwrap_or_default());
+    log::info!("========================================");
+
+    log::info!("Creating Tauri builder...");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -32,13 +74,18 @@ pub fn run() {
             commands::export_logs,
         ])
         .setup(|_app| {
+            log::info!("Tauri setup hook running");
+
             // Open devtools in debug builds
             #[cfg(debug_assertions)]
             {
                 use tauri::Manager;
+                log::info!("Debug build — opening devtools");
                 let window = _app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
+
+            log::info!("Setup complete, window should be visible");
             Ok(())
         })
         .run(tauri::generate_context!())
