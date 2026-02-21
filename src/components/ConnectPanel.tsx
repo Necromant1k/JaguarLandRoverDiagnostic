@@ -44,6 +44,18 @@ export default function ConnectPanel({
     }).catch(() => {});
   }, []);
 
+  // Load bench mode status from backend on mount (persists across tab switches)
+  useEffect(() => {
+    if (connected) {
+      api.getBenchModeStatus().then((status) => {
+        setBenchMode(status.enabled);
+        if (status.emulated_ecus.length > 0) {
+          setSelectedEcus(new Set(status.emulated_ecus));
+        }
+      }).catch(() => {});
+    }
+  }, [connected]);
+
   const getDllPath = (): string | undefined => {
     if (selectedDevice === AUTO_DETECT) return undefined;
     if (selectedDevice === MANUAL_PATH) return manualPath || undefined;
