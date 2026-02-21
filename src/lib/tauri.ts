@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DeviceInfo,
-  VehicleInfo,
-  SshResult,
+  EcuInfoEntry,
   RoutineInfo,
   RoutineResponse,
   J2534DeviceEntry,
@@ -32,12 +31,8 @@ export async function getBenchModeStatus(): Promise<BenchModeStatus> {
   return invoke<BenchModeStatus>("get_bench_mode_status");
 }
 
-export async function readVehicleInfo(): Promise<VehicleInfo> {
-  return invoke<VehicleInfo>("read_vehicle_info");
-}
-
-export async function enableSsh(): Promise<SshResult> {
-  return invoke<SshResult>("enable_ssh");
+export async function readEcuInfo(ecu: string): Promise<EcuInfoEntry[]> {
+  return invoke<EcuInfoEntry[]>("read_ecu_info", { ecu });
 }
 
 export async function runRoutine(

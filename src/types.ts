@@ -5,20 +5,11 @@ export interface DeviceInfo {
   dll_path: string;
 }
 
-export interface VehicleInfo {
-  vin: string | null;
-  voltage: number | null;
-  master_part: string | null;
-  v850_part: string | null;
-  tuner_part: string | null;
-  serial: string | null;
-  session: string | null;
-}
-
-export interface SshResult {
-  success: boolean;
-  ip_address: string;
-  message: string;
+export interface EcuInfoEntry {
+  label: string;
+  did_hex: string;
+  value: string | null;
+  error: string | null;
 }
 
 export interface RoutineInfo {
@@ -53,4 +44,4 @@ export interface BenchModeStatus {
   emulated_ecus: string[];
 }
 
-export type Tab = "connect" | "vehicle" | "ssh" | "imc";
+export type Tab = "connect" | "imc" | "bcm";

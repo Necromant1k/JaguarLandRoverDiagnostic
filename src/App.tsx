@@ -2,9 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
 import ConnectPanel from "./components/ConnectPanel";
-import VehicleInfo from "./components/VehicleInfo";
-import SshPanel from "./components/SshPanel";
-import RoutinesPanel from "./components/RoutinesPanel";
+import ImcPanel from "./components/ImcPanel";
+import BcmPanel from "./components/BcmPanel";
 import LogConsole from "./components/LogConsole";
 import type { Tab, LogEntry, DeviceInfo } from "./types";
 
@@ -48,19 +47,17 @@ function App() {
             onDisconnected={handleDisconnected}
           />
         );
-      case "vehicle":
-        return <VehicleInfo connected={connected} />;
-      case "ssh":
-        return <SshPanel connected={connected} />;
       case "imc":
-        return <RoutinesPanel connected={connected} />;
+        return <ImcPanel connected={connected} />;
+      case "bcm":
+        return <BcmPanel connected={connected} />;
     }
   };
 
   return (
     <div className="h-screen flex flex-col bg-bg-primary">
       {/* Header */}
-      <header className="h-10 flex items-center px-4 bg-bg-secondary border-b border-gray-700/50 shrink-0">
+      <header className="h-10 flex items-center px-4 bg-bg-secondary border-b border-[#444] shrink-0">
         <span className="text-accent font-bold text-sm tracking-wider">
           JLR UDS DIAGNOSTIC TOOL
         </span>

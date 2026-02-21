@@ -8,7 +8,7 @@ use crate::j2534::dll;
 use crate::j2534::types::*;
 use crate::state::{AppState, Connection};
 use crate::uds::client::{LogDirection, LogEntry};
-use crate::uds::services::{did, ecu_addr, routine, SshResult};
+use crate::uds::services::{did, ecu_addr, routine};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceInfo {
@@ -18,15 +18,12 @@ pub struct DeviceInfo {
     pub dll_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VehicleInfo {
-    pub vin: Option<String>,
-    pub voltage: Option<f32>,
-    pub master_part: Option<String>,
-    pub v850_part: Option<String>,
-    pub tuner_part: Option<String>,
-    pub serial: Option<String>,
-    pub session: Option<String>,
+#[derive(Debug, Serialize)]
+pub struct EcuInfoEntry {
+    pub label: String,
+    pub did_hex: String,
+    pub value: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -298,81 +295,121 @@ pub fn get_bench_mode_status(state: State<'_, AppState>) -> Result<BenchModeStat
     }
 }
 
-/// Read vehicle info from ECU
+/// Read ECU info — returns a list of DID entries for the given ECU
 #[tauri::command]
-pub fn read_vehicle_info(app: AppHandle, state: State<'_, AppState>) -> Result<VehicleInfo, String> {
+pub fn read_ecu_info(app: AppHandle, state: State<'_, AppState>, ecu: String) -> Result<Vec<EcuInfoEntry>, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
-    // We can't move the channel into UdsClient, so we need to create a temporary client
-    // For now, build the messages manually
-    let mut info = VehicleInfo {
-        vin: None,
-        voltage: None,
-        master_part: None,
-        v850_part: None,
-        tuner_part: None,
-        serial: None,
-        session: None,
+    let entries = match ecu.as_str() {
+        "imc" => read_imc_info(&app, channel),
+        "bcm" => read_bcm_info(&app, channel),
+        _ => return Err(format!("Unknown ECU: {}", ecu)),
     };
 
-    // Read VIN
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::VIN) {
-        Ok(data) => {
-            info.vin = Some(String::from_utf8_lossy(&data).trim().to_string());
-        }
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("VIN read failed: {}", e)),
-    }
+    Ok(entries)
+}
 
-    // Read battery voltage from BCM
-    match send_read_did_on_ecu(&app, channel, ecu_addr::BCM_TX, ecu_addr::BCM_RX, did::BATTERY_VOLTAGE) {
-        Ok(data) => {
-            if data.len() >= 2 {
-                let raw = ((data[0] as u16) << 8 | data[1] as u16) as f32;
-                info.voltage = Some(raw * 0.1);
-            }
-        }
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Voltage read failed: {}", e)),
+fn read_did_entry(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    tx_id: u32,
+    did_id: u16,
+    label: &str,
+    format_fn: fn(&[u8]) -> String,
+) -> EcuInfoEntry {
+    let did_hex = format!("{:04X}", did_id);
+    match send_read_did(app, channel, tx_id, did_id) {
+        Ok(data) => EcuInfoEntry {
+            label: label.to_string(),
+            did_hex,
+            value: Some(format_fn(&data)),
+            error: None,
+        },
+        Err(e) => EcuInfoEntry {
+            label: label.to_string(),
+            did_hex,
+            value: None,
+            error: Some(e),
+        },
     }
+}
 
-    // Read part numbers
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::MASTER_RPM_PART) {
-        Ok(data) => info.master_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F188 failed: {}", e)),
+fn format_string(data: &[u8]) -> String {
+    String::from_utf8_lossy(data).trim().to_string()
+}
+
+fn format_diag_session(data: &[u8]) -> String {
+    if data.is_empty() {
+        return "Unknown".to_string();
     }
+    let session_str = match data[0] {
+        0x01 => "Default",
+        0x02 => "Programming",
+        0x03 => "Extended",
+        _ => "Unknown",
+    };
+    format!("{} (0x{:02X})", session_str, data[0])
+}
 
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::V850_PART) {
-        Ok(data) => info.v850_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F120 failed: {}", e)),
+fn format_hex_bytes(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
+fn format_voltage(data: &[u8]) -> String {
+    if data.len() >= 2 {
+        let raw = ((data[0] as u16) << 8 | data[1] as u16) as f32;
+        format!("{:.1} V", raw * 0.1)
+    } else if !data.is_empty() {
+        format!("{:.1} V", data[0] as f32 * 0.1)
+    } else {
+        "N/A".to_string()
     }
+}
 
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::TUNER_PART) {
-        Ok(data) => info.tuner_part = Some(String::from_utf8_lossy(&data).trim().to_string()),
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Part F121 failed: {}", e)),
+fn format_soc(data: &[u8]) -> String {
+    if !data.is_empty() {
+        format!("{}%", data[0])
+    } else {
+        "N/A".to_string()
     }
+}
 
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::ECU_SERIAL) {
-        Ok(data) => info.serial = Some(String::from_utf8_lossy(&data).trim().to_string()),
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Serial F18C failed: {}", e)),
+fn format_temp(data: &[u8]) -> String {
+    if !data.is_empty() {
+        // Typical: raw - 40 = degrees C
+        let temp = data[0] as i16 - 40;
+        format!("{} °C", temp)
+    } else {
+        "N/A".to_string()
     }
+}
 
-    match send_read_did(&app, channel, ecu_addr::IMC_TX, did::ACTIVE_DIAG_SESSION) {
-        Ok(data) => {
-            if !data.is_empty() {
-                let session_str = match data[0] {
-                    0x01 => "Default",
-                    0x02 => "Programming",
-                    0x03 => "Extended",
-                    _ => "Unknown",
-                };
-                info.session = Some(format!("{} (0x{:02X})", session_str, data[0]));
-            }
-        }
-        Err(e) => emit_log_simple(&app, LogDirection::Error, &[], &format!("Session D100 failed: {}", e)),
-    }
+fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel) -> Vec<EcuInfoEntry> {
+    let tx = ecu_addr::IMC_TX;
+    vec![
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string),
+        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string),
+        read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string),
+        read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string),
+        read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string),
+        read_did_entry(app, channel, tx, did::PBL_PART, "PBL Part", format_string),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string),
+        read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session),
+        read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_hex_bytes),
+    ]
+}
 
-    Ok(info)
+fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel) -> Vec<EcuInfoEntry> {
+    let tx = ecu_addr::BCM_TX;
+    vec![
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string),
+        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage),
+        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc),
+        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp),
+    ]
 }
 
 /// SDD prerequisite flow: TesterPresent → Extended Session → Security Access (if needed)
@@ -425,41 +462,6 @@ fn sdd_prerequisite_flow(
 /// Look up routine metadata from the known routines list
 fn find_routine_meta(routine_id: u16) -> Option<RoutineInfo> {
     list_routines().into_iter().find(|r| r.routine_id == routine_id)
-}
-
-/// Enable SSH on IMC
-#[tauri::command]
-pub fn enable_ssh(app: AppHandle, state: State<'_, AppState>) -> Result<SshResult, String> {
-    let conn = state.connection.lock().map_err(|e| e.to_string())?;
-    let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel = conn.channel.as_ref().ok_or("No channel available")?;
-
-    // SDD prerequisite flow (SSH requires security)
-    sdd_prerequisite_flow(&app, channel, true)?;
-
-    // Routine 0x603E SSH Enable
-    let routine_request = vec![0x31, 0x01, 0x60, 0x3E, 0x01];
-    emit_log_simple(&app, LogDirection::Tx, &routine_request, "RoutineControl SSH Enable");
-    let routine_resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &routine_request, true)
-        .map_err(|e| format!("SSH routine failed: {}", e))?;
-
-    let success = !routine_resp.is_empty() && routine_resp[0] == 0x71;
-    Ok(SshResult {
-        success,
-        ip_address: "192.168.103.11".to_string(),
-        message: if success {
-            "SSH ENABLED — Connect: root@192.168.103.11".to_string()
-        } else {
-            format!(
-                "Routine response: {}",
-                routine_resp
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-        },
-    })
 }
 
 /// Run a generic routine with SDD prerequisite flow
@@ -729,17 +731,6 @@ fn send_read_did(
     } else {
         Ok(vec![])
     }
-}
-
-/// Read a DID on a different ECU (BCM filter is set up at connect time)
-fn send_read_did_on_ecu(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
-    ecu_tx: u32,
-    _ecu_rx: u32,
-    did_id: u16,
-) -> Result<Vec<u8>, String> {
-    send_read_did(app, channel, ecu_tx, did_id)
 }
 
 /// Export UDS logs as text (called from frontend "Copy Logs" button)

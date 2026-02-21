@@ -44,8 +44,8 @@ export default function RoutinesPanel({ connected }: Props) {
   };
 
   return (
-    <div className="space-y-4 max-w-2xl">
-      <h2 className="text-lg font-bold text-accent">IMC Routines</h2>
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold text-[#cccccc]">Routines</h3>
 
       {error && (
         <div className="bg-err/10 border border-err/30 rounded p-2 text-err text-xs">

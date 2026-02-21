@@ -3,17 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #0a0e1a;
-  --bg-secondary: #111827;
-  --bg-card: #1a1f2e;
-  --bg-hover: #242a3d;
-  --accent: #00d4ff;
-  --ok: #00ff88;
-  --err: #ff3b3b;
-  --warn: #ffaa00;
-  --pending: #ffd700;
-  --tx: #00d4ff;
-  --rx: #00ff88;
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-card: #2d2d2d;
+  --bg-hover: #2a2d2e;
+  --accent: #007acc;
+  --ok: #4ec9b0;
+  --err: #f44747;
+  --warn: #cca700;
+  --pending: #dcdcaa;
+  --tx: #569cd6;
+  --rx: #4ec9b0;
 }
 
 html,
@@ -21,7 +21,7 @@ body {
   margin: 0;
   padding: 0;
   background: var(--bg-primary);
-  color: #e0e0e0;
+  color: #cccccc;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   -webkit-font-smoothing: antialiased;
 }
@@ -32,14 +32,14 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
+  background: #252526;
 }
 ::-webkit-scrollbar-thumb {
-  background: #374151;
+  background: #424242;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4b5563;
+  background: #555555;
 }
 
 /* Status LED */
@@ -91,5 +91,6 @@ body {
 
 /* Card */
 .card {
-  @apply bg-bg-card rounded-lg border border-gray-700/50 p-4;
+  @apply bg-bg-card rounded-lg p-4;
+  border: 1px solid #444444;
 }

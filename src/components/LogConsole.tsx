@@ -56,8 +56,8 @@ export default function LogConsole({ logs, onClear }: Props) {
   };
 
   return (
-    <div className="h-48 bg-bg-secondary border-t border-gray-700/50 flex flex-col shrink-0">
-      <div className="flex items-center justify-between px-3 py-1 border-b border-gray-700/30">
+    <div className="h-48 bg-bg-secondary border-t border-[#444] flex flex-col shrink-0">
+      <div className="flex items-center justify-between px-3 py-1 border-b border-[#444]">
         <span className="text-xs text-gray-400 uppercase tracking-wider">
           UDS Log
         </span>
