@@ -97,28 +97,62 @@ pub fn connect(
         return Err("Already connected. Disconnect first.".into());
     }
 
-    let path = dll_path.unwrap_or_else(|| {
-        // Auto-detect: pick first discovered device, fall back to default Mongoose path
+    let (lib, device, path) = if let Some(path) = dll_path {
+        // Explicit path provided
+        emit_log_simple(&app, LogDirection::Tx, &[], &format!("Loading J2534 DLL: {}", path));
+        let lib = Arc::new(dll::J2534Lib::load(&path)?);
+        let device = crate::j2534::device::J2534Device::open(lib.clone())?;
+        (lib, device, path)
+    } else {
+        // Auto-detect: try each discovered device until one opens successfully
         let devices = dll::discover_j2534_dlls();
-        if let Some((name, p)) = devices.first() {
-            log::info!("Auto-detected J2534 device: {} at {}", name, p.display());
-            p.to_string_lossy().to_string()
-        } else {
-            dll::default_mongoose_dll_path()
-                .to_string_lossy()
-                .to_string()
+        log::info!("Auto-detect: found {} J2534 devices", devices.len());
+
+        let mut last_err = String::from("No J2534 devices found in registry");
+        let mut found = None;
+
+        for (name, p) in &devices {
+            let p_str = p.to_string_lossy().to_string();
+            log::info!("Auto-detect: trying {} at {}", name, p.display());
+            emit_log_simple(&app, LogDirection::Tx, &[], &format!("Trying: {} ({})", name, p_str));
+
+            match dll::J2534Lib::load(&p_str) {
+                Ok(lib) => {
+                    let lib = Arc::new(lib);
+                    match crate::j2534::device::J2534Device::open(lib.clone()) {
+                        Ok(device) => {
+                            log::info!("Auto-detect: successfully opened {}", name);
+                            emit_log_simple(&app, LogDirection::Rx, &[], &format!("Connected to {}", name));
+                            found = Some((lib, device, p_str));
+                            break;
+                        }
+                        Err(e) => {
+                            log::warn!("Auto-detect: {} failed to open device: {}", name, e);
+                            last_err = format!("{}: {}", name, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Auto-detect: {} failed to load DLL: {}", name, e);
+                    last_err = format!("{}: {}", name, e);
+                }
+            }
         }
-    });
 
-    emit_log_simple(
-        &app,
-        LogDirection::Tx,
-        &[],
-        &format!("Loading J2534 DLL: {}", path),
-    );
+        // Fall back to default Mongoose path if no discovered device worked
+        if found.is_none() {
+            let default_path = dll::default_mongoose_dll_path().to_string_lossy().to_string();
+            log::info!("Auto-detect: trying default Mongoose path: {}", default_path);
+            if let Ok(lib) = dll::J2534Lib::load(&default_path) {
+                let lib = Arc::new(lib);
+                if let Ok(device) = crate::j2534::device::J2534Device::open(lib.clone()) {
+                    found = Some((lib, device, default_path));
+                }
+            }
+        }
 
-    let lib = Arc::new(dll::J2534Lib::load(&path)?);
-    let device = crate::j2534::device::J2534Device::open(lib.clone())?;
+        found.ok_or_else(|| format!("No J2534 device responded. Last error: {}", last_err))?
+    };
 
     let version = device.read_version()?;
 
