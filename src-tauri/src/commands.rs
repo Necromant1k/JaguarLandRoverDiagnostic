@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::ecu_emulator::EcuId;
+use crate::ecu_emulator::{EcuEmulatorManager, EcuId};
 use crate::j2534::dll;
 use crate::j2534::types::*;
 use crate::state::{AppState, Connection};
@@ -309,9 +309,10 @@ pub fn read_ecu_info(app: AppHandle, state: State<'_, AppState>, ecu: String) ->
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
+    let emulator = conn.emulator_manager.as_ref();
     let entries = match ecu.as_str() {
-        "imc" => read_imc_info(&app, channel),
-        "bcm" => read_bcm_info(&app, channel),
+        "imc" => read_imc_info(&app, channel, emulator),
+        "bcm" => read_bcm_info(&app, channel, emulator),
         _ => return Err(format!("Unknown ECU: {}", ecu)),
     };
 
@@ -325,15 +326,20 @@ fn read_did_entry(
     did_id: u16,
     label: &str,
     format_fn: fn(&[u8]) -> String,
+    emulator: Option<&EcuEmulatorManager>,
 ) -> EcuInfoEntry {
     let did_hex = format!("{:04X}", did_id);
-    match send_read_did(app, channel, tx_id, did_id) {
-        Ok(data) => EcuInfoEntry {
-            label: label.to_string(),
-            did_hex,
-            value: Some(format_fn(&data)),
-            error: None,
-        },
+    match send_read_did(app, channel, tx_id, did_id, emulator) {
+        Ok(data) => {
+            let value = format_fn(&data);
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("{} = {}", label, value));
+            EcuInfoEntry {
+                label: label.to_string(),
+                did_hex,
+                value: Some(value),
+                error: None,
+            }
+        }
         Err(e) => EcuInfoEntry {
             label: label.to_string(),
             did_hex,
@@ -360,8 +366,19 @@ fn format_diag_session(data: &[u8]) -> String {
     format!("{} (0x{:02X})", session_str, data[0])
 }
 
-fn format_hex_bytes(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+fn format_imc_status(data: &[u8]) -> String {
+    if data.is_empty() {
+        return "Unknown".to_string();
+    }
+    match data[0] {
+        0x00 => "Normal (0x00)".to_string(),
+        0x01 => "Booting (0x01)".to_string(),
+        0x02 => "Shutdown (0x02)".to_string(),
+        0x03 => "Suspend (0x03)".to_string(),
+        0x04 => "Standby (0x04)".to_string(),
+        0x05 => "Error (0x05)".to_string(),
+        _ => format!("0x{:02X}", data[0]),
+    }
 }
 
 fn format_voltage(data: &[u8]) -> String {
@@ -393,29 +410,29 @@ fn format_temp(data: &[u8]) -> String {
     }
 }
 
-fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel) -> Vec<EcuInfoEntry> {
+fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::IMC_TX;
     vec![
-        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string),
-        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string),
-        read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string),
-        read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string),
-        read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string),
-        read_did_entry(app, channel, tx, did::PBL_PART, "PBL Part", format_string),
-        read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string),
-        read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string),
-        read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session),
-        read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_hex_bytes),
+        read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, emulator),
+        read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, emulator),
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator),
+        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string, emulator),
+        read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string, emulator),
+        read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string, emulator),
+        read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, emulator),
+        read_did_entry(app, channel, tx, did::PBL_PART, "PBL Part", format_string, emulator),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, emulator),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, emulator),
     ]
 }
 
-fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel) -> Vec<EcuInfoEntry> {
+fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::BCM_TX;
     vec![
-        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string),
-        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage),
-        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc),
-        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp),
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage, emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc, emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp, emulator),
     ]
 }
 
@@ -425,21 +442,22 @@ fn sdd_prerequisite_flow(
     app: &AppHandle,
     channel: &crate::j2534::device::J2534Channel,
     needs_security: bool,
+    emulator: Option<&EcuEmulatorManager>,
 ) -> Result<(), String> {
     // Step 1: TesterPresent
     emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent");
-    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false)
+    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator)
         .map_err(|e| format!("TesterPresent failed: {}", e))?;
 
     // Step 2: Extended session
     emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "DiagnosticSessionControl Extended");
-    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false)
+    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false, emulator)
         .map_err(|e| format!("Extended session failed: {}", e))?;
 
     // Step 3: Security Access (if required)
     if needs_security {
         emit_log_simple(app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed");
-        let seed_resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x27, 0x11], false)
+        let seed_resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x27, 0x11], false, emulator)
             .map_err(|e| format!("Security seed request failed: {}", e))?;
 
         if seed_resp.len() >= 5 {
@@ -457,7 +475,7 @@ fn sdd_prerequisite_flow(
                 let mut key_request = vec![0x27, 0x12];
                 key_request.extend_from_slice(&key_bytes);
                 emit_log_simple(app, LogDirection::Tx, &key_request, "SecurityAccess SendKey");
-                send_uds_request(app, channel, ecu_addr::IMC_TX, &key_request, false)
+                send_uds_request(app, channel, ecu_addr::IMC_TX, &key_request, false, emulator)
                     .map_err(|e| format!("Security key send failed: {}", e))?;
             }
         }
@@ -488,14 +506,16 @@ pub fn run_routine(
     let needs_security = meta.as_ref().map_or(false, |m| m.needs_security);
     let needs_pending = meta.as_ref().map_or(false, |m| m.needs_pending);
 
+    let emulator = conn.emulator_manager.as_ref();
+
     // Run SDD prerequisite flow (TesterPresent + Extended Session + optional Security)
-    sdd_prerequisite_flow(&app, channel, needs_security)?;
+    sdd_prerequisite_flow(&app, channel, needs_security, emulator)?;
 
     // Send RoutineControl Start
     let mut request = vec![0x31, 0x01, (routine_id >> 8) as u8, (routine_id & 0xFF) as u8];
     request.extend_from_slice(&data);
 
-    let resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &request, needs_pending)
+    let resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &request, needs_pending, emulator)
         .map_err(|e| format!("Routine 0x{:04X} failed: {}", routine_id, e))?;
 
     let raw_data = if resp.len() > 4 {
@@ -538,7 +558,7 @@ pub fn read_did(
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
-    let data = send_read_did(&app, channel, ecu_tx, did_id)?;
+    let data = send_read_did(&app, channel, ecu_tx, did_id, conn.emulator_manager.as_ref())?;
     Ok(data)
 }
 
@@ -659,14 +679,50 @@ pub fn list_routines() -> Vec<RoutineInfo> {
 
 // ─── Internal helpers ───────────────────────────────────────────────
 
-/// Send raw UDS request on a channel and get response
+/// Human-readable DID name lookup
+fn did_name(did_id: u16) -> &'static str {
+    match did_id {
+        0xF190 => "VIN",
+        0xF188 => "Master RPM Part",
+        0xF120 => "V850 Part",
+        0xF121 => "Tuner Part",
+        0xF1A5 => "Polar Part",
+        0xF180 => "PBL Part",
+        0xF18C => "ECU Serial",
+        0xF113 => "ECU Serial 2",
+        0xD100 => "Diag Session",
+        0x0202 => "IMC Status",
+        0x402A => "Battery Voltage",
+        0x4028 => "Battery SOC",
+        0x4029 => "Battery Temp",
+        0x4030 => "Door Status",
+        0x4032 => "Fuel Level",
+        _ => "",
+    }
+}
+
+/// Send raw UDS request on a channel and get response.
+/// If an emulator is provided and handles the tx_id, bypass J2534 entirely.
 fn send_uds_request(
     app: &AppHandle,
     channel: &crate::j2534::device::J2534Channel,
     tx_id: u32,
     request: &[u8],
     wait_pending: bool,
+    emulator: Option<&EcuEmulatorManager>,
 ) -> Result<Vec<u8>, String> {
+    // Software routing: if the target ECU is emulated, handle locally
+    if let Some(emu) = emulator {
+        if let Some(response) = emu.try_handle(tx_id, request) {
+            emit_log_simple(app, LogDirection::Rx, &response, "EMU");
+            if response[0] == 0x7F && response.len() >= 3 {
+                let nrc = crate::uds::error::NegativeResponseCode::from_byte(response[2]);
+                return Err(format!("NRC: {}", nrc));
+            }
+            return Ok(response);
+        }
+    }
+
     // Build and send ISO15765 message
     let msg = PassThruMsg::new_iso15765(tx_id, request);
     channel.send(&msg, 2000)?;
@@ -717,21 +773,23 @@ fn send_uds_request(
     }
 }
 
-/// Read a DID on the default IMC channel
+/// Read a DID on a channel, with optional emulator bypass
 fn send_read_did(
     app: &AppHandle,
     channel: &crate::j2534::device::J2534Channel,
     tx_id: u32,
     did_id: u16,
+    emulator: Option<&EcuEmulatorManager>,
 ) -> Result<Vec<u8>, String> {
     let request = vec![0x22, (did_id >> 8) as u8, (did_id & 0xFF) as u8];
-    emit_log_simple(
-        app,
-        LogDirection::Tx,
-        &request,
-        &format!("ReadDID 0x{:04X}", did_id),
-    );
-    let resp = send_uds_request(app, channel, tx_id, &request, false)?;
+    let name = did_name(did_id);
+    let label = if name.is_empty() {
+        format!("ReadDID 0x{:04X}", did_id)
+    } else {
+        format!("ReadDID {} ({:04X})", name, did_id)
+    };
+    emit_log_simple(app, LogDirection::Tx, &request, &label);
+    let resp = send_uds_request(app, channel, tx_id, &request, false, emulator)?;
     // Return data after service ID + DID
     if resp.len() > 3 {
         Ok(resp[3..].to_vec())

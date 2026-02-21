@@ -268,6 +268,17 @@ impl EcuEmulatorManager {
         &self.emulated_ecus
     }
 
+    /// Try to handle a UDS request locally if it targets an emulated ECU.
+    /// Returns Some(response) if handled, None if the ECU isn't emulated.
+    pub fn try_handle(&self, tx_id: u32, request: &[u8]) -> Option<Vec<u8>> {
+        for ecu in &self.emulated_ecus {
+            if ecu.tx_id() == tx_id {
+                return create_handler(*ecu).build_response(request);
+            }
+        }
+        None
+    }
+
     fn emulator_loop(
         fns: RawJ2534Fns,
         channel_id: u32,
@@ -593,5 +604,54 @@ mod tests {
     fn test_create_handler_ipc() {
         let handler = create_handler(EcuId::Ipc);
         assert_eq!(handler.name(), "IPC");
+    }
+
+    // ─── try_handle tests ──────────────────────────────────────
+
+    #[test]
+    fn test_try_handle_bcm_vin() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Bcm],
+        };
+        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0xF1, 0x90]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        let vin = String::from_utf8_lossy(&resp[3..]);
+        assert_eq!(vin, "SAJBA4BN0HA000000");
+    }
+
+    #[test]
+    fn test_try_handle_bcm_voltage() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Bcm],
+        };
+        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0x40, 0x2A]).unwrap();
+        assert_eq!(resp, vec![0x62, 0x40, 0x2A, 0x00, 0x7C]);
+    }
+
+    #[test]
+    fn test_try_handle_unknown_txid() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Bcm],
+        };
+        // IMC TX is not emulated
+        let resp = mgr.try_handle(ecu_addr::IMC_TX, &[0x22, 0xF1, 0x90]);
+        assert!(resp.is_none());
+    }
+
+    #[test]
+    fn test_try_handle_unknown_did() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Bcm],
+        };
+        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0xFF, 0xFF]).unwrap();
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]); // NRC requestOutOfRange
     }
 }

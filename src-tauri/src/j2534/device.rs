@@ -120,7 +120,7 @@ impl J2534Channel {
         let mut mask = PassThruMsg::default();
         mask.protocol_id = PROTOCOL_ISO15765;
         mask.data_size = 4;
-        mask.data[0..4].copy_from_slice(&0x0000FFFFu32.to_be_bytes());
+        mask.data[0..4].copy_from_slice(&0x000007FFu32.to_be_bytes());
 
         let mut pattern = PassThruMsg::default();
         pattern.protocol_id = PROTOCOL_ISO15765;
@@ -179,8 +179,8 @@ impl J2534Channel {
                 timeout_ms,
             )
         };
-        // BufferEmpty (0x10) is not an error — just means no messages
-        if ret != 0 && ret != 0x10 {
+        // BufferEmpty (0x10) and Timeout (0x09) are not fatal — just means no messages yet
+        if ret != 0 && ret != 0x10 && ret != 0x09 {
             return Err(format!(
                 "PassThruReadMsgs failed: {}",
                 J2534Error::from_code(ret)
