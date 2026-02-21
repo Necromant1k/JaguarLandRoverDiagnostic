@@ -138,6 +138,9 @@ impl BcmEmulator {
             // DiagnosticSessionControl (10 XX) → positive response (50 XX ...)
             [0x10, session, ..] => Some(vec![0x50, *session, 0x00, 0x19, 0x01, 0xF4]),
 
+            // ECUReset (11 XX) → positive response (51 XX)
+            [0x11, reset_type, ..] => Some(vec![0x51, *reset_type]),
+
             // ReadDataByIdentifier (22 XX XX)
             [0x22, did_hi, did_lo, ..] => {
                 let did = ((*did_hi as u16) << 8) | (*did_lo as u16);
@@ -148,13 +151,34 @@ impl BcmEmulator {
                     0x4028 => Some(vec![0x62, 0x40, 0x28, 0x55]),
                     // Battery temp (4029) → 25°C
                     0x4029 => Some(vec![0x62, 0x40, 0x29, 0x19]),
-                    // Unknown DID → NRC serviceNotSupported
+                    // Door status (4030) → all closed
+                    0x4030 => Some(vec![0x62, 0x40, 0x30, 0x00]),
+                    // Fuel level (4032) → 75%
+                    0x4032 => Some(vec![0x62, 0x40, 0x32, 0x4B]),
+                    // VIN (F190)
+                    0xF190 => {
+                        let mut resp = vec![0x62, 0xF1, 0x90];
+                        resp.extend_from_slice(b"SAJBA4BN0HA000000");
+                        Some(resp)
+                    }
+                    // Unknown DID → NRC requestOutOfRange
                     _ => Some(vec![0x7F, 0x22, 0x31]),
                 }
             }
 
             // SecurityAccess seed request (27 XX) → zero seed (already unlocked)
             [0x27, level, ..] => Some(vec![0x67, *level, 0x00, 0x00, 0x00]),
+
+            // CommunicationControl (28 XX XX) → positive response (68 XX)
+            [0x28, sub_function, ..] => Some(vec![0x68, *sub_function]),
+
+            // WriteDataByIdentifier (2E XX XX ...) → positive response (6E XX XX)
+            [0x2E, did_hi, did_lo, ..] => Some(vec![0x6E, *did_hi, *did_lo]),
+
+            // RoutineControl (31 XX XX XX) → positive response (71 XX XX XX)
+            [0x31, sub_fn, rid_hi, rid_lo, ..] => {
+                Some(vec![0x71, *sub_fn, *rid_hi, *rid_lo])
+            }
 
             // Unknown service → NRC serviceNotSupported
             [sid, ..] => Some(vec![0x7F, *sid, 0x11]),
@@ -237,6 +261,66 @@ mod tests {
         let request = vec![0x27, 0x11];
         let response = BcmEmulator::build_response(&request).unwrap();
         assert_eq!(response, vec![0x67, 0x11, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_responds_door_status() {
+        let request = vec![0x22, 0x40, 0x30];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x62, 0x40, 0x30, 0x00]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_responds_fuel_level() {
+        let request = vec![0x22, 0x40, 0x32];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x62, 0x40, 0x32, 0x4B]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_responds_vin() {
+        let request = vec![0x22, 0xF1, 0x90];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response[0], 0x62);
+        assert_eq!(response[1], 0xF1);
+        assert_eq!(response[2], 0x90);
+        let vin = String::from_utf8_lossy(&response[3..]);
+        assert_eq!(vin, "SAJBA4BN0HA000000");
+    }
+
+    #[test]
+    fn test_bcm_emulator_ecu_reset() {
+        let request = vec![0x11, 0x01]; // hard reset
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x51, 0x01]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_ecu_reset_soft() {
+        let request = vec![0x11, 0x03];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x51, 0x03]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_comm_control() {
+        let request = vec![0x28, 0x01, 0x01];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x68, 0x01]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_write_did() {
+        let request = vec![0x2E, 0x40, 0x30, 0x01];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x6E, 0x40, 0x30]);
+    }
+
+    #[test]
+    fn test_bcm_emulator_routine_control() {
+        let request = vec![0x31, 0x01, 0x60, 0x3E];
+        let response = BcmEmulator::build_response(&request).unwrap();
+        assert_eq!(response, vec![0x71, 0x01, 0x60, 0x3E]);
     }
 
     #[test]

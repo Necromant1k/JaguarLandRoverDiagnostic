@@ -11,12 +11,16 @@ const mockRoutines = [
     name: "Configure Linux to Hardware",
     description: "Reconfigure IMC Linux environment (0x6038)",
     category: "Configuration",
+    needs_security: true,
+    needs_pending: true,
   },
   {
     routine_id: 0x603e,
     name: "SSH Enable",
     description: "Enable SSH access on IMC (0x603E)",
     category: "Diagnostics",
+    needs_security: true,
+    needs_pending: true,
   },
 ];
 

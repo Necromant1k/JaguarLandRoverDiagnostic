@@ -34,6 +34,8 @@ pub struct RoutineInfo {
     pub name: String,
     pub description: String,
     pub category: String,
+    pub needs_security: bool,
+    pub needs_pending: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +284,58 @@ pub fn read_vehicle_info(app: AppHandle, state: State<'_, AppState>) -> Result<V
     Ok(info)
 }
 
+/// SDD prerequisite flow: TesterPresent → Extended Session → Security Access (if needed)
+/// This is the standard JLR SDD sequence required before executing secured routines.
+fn sdd_prerequisite_flow(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    needs_security: bool,
+) -> Result<(), String> {
+    // Step 1: TesterPresent
+    emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent");
+    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false)
+        .map_err(|e| format!("TesterPresent failed: {}", e))?;
+
+    // Step 2: Extended session
+    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "DiagnosticSessionControl Extended");
+    send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false)
+        .map_err(|e| format!("Extended session failed: {}", e))?;
+
+    // Step 3: Security Access (if required)
+    if needs_security {
+        emit_log_simple(app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed");
+        let seed_resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x27, 0x11], false)
+            .map_err(|e| format!("Security seed request failed: {}", e))?;
+
+        if seed_resp.len() >= 5 {
+            let seed = &seed_resp[2..5];
+            let seed_int = ((seed[0] as u32) << 16) | ((seed[1] as u32) << 8) | (seed[2] as u32);
+
+            if seed_int != 0 {
+                let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
+                let key_bytes = [
+                    ((key_int >> 16) & 0xFF) as u8,
+                    ((key_int >> 8) & 0xFF) as u8,
+                    (key_int & 0xFF) as u8,
+                ];
+
+                let mut key_request = vec![0x27, 0x12];
+                key_request.extend_from_slice(&key_bytes);
+                emit_log_simple(app, LogDirection::Tx, &key_request, "SecurityAccess SendKey");
+                send_uds_request(app, channel, ecu_addr::IMC_TX, &key_request, false)
+                    .map_err(|e| format!("Security key send failed: {}", e))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Look up routine metadata from the known routines list
+fn find_routine_meta(routine_id: u16) -> Option<RoutineInfo> {
+    list_routines().into_iter().find(|r| r.routine_id == routine_id)
+}
+
 /// Enable SSH on IMC
 #[tauri::command]
 pub fn enable_ssh(app: AppHandle, state: State<'_, AppState>) -> Result<SshResult, String> {
@@ -289,42 +343,10 @@ pub fn enable_ssh(app: AppHandle, state: State<'_, AppState>) -> Result<SshResul
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
-    // Step 1: TesterPresent
-    emit_log_simple(&app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent");
-    send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false)
-        .map_err(|e| format!("TesterPresent failed: {}", e))?;
+    // SDD prerequisite flow (SSH requires security)
+    sdd_prerequisite_flow(&app, channel, true)?;
 
-    // Step 2: Extended session
-    emit_log_simple(&app, LogDirection::Tx, &[0x10, 0x03], "DiagnosticSessionControl Extended");
-    send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false)
-        .map_err(|e| format!("Extended session failed: {}", e))?;
-
-    // Step 3: Security Access
-    emit_log_simple(&app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed");
-    let seed_resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &[0x27, 0x11], false)
-        .map_err(|e| format!("Security seed request failed: {}", e))?;
-
-    if seed_resp.len() >= 5 {
-        let seed = &seed_resp[2..5];
-        let seed_int = ((seed[0] as u32) << 16) | ((seed[1] as u32) << 8) | (seed[2] as u32);
-
-        if seed_int != 0 {
-            let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
-            let key_bytes = [
-                ((key_int >> 16) & 0xFF) as u8,
-                ((key_int >> 8) & 0xFF) as u8,
-                (key_int & 0xFF) as u8,
-            ];
-
-            let mut key_request = vec![0x27, 0x12];
-            key_request.extend_from_slice(&key_bytes);
-            emit_log_simple(&app, LogDirection::Tx, &key_request, "SecurityAccess SendKey");
-            send_uds_request(&app, channel, ecu_addr::IMC_TX, &key_request, false)
-                .map_err(|e| format!("Security key send failed: {}", e))?;
-        }
-    }
-
-    // Step 4: Routine 0x603E SSH Enable
+    // Routine 0x603E SSH Enable
     let routine_request = vec![0x31, 0x01, 0x60, 0x3E, 0x01];
     emit_log_simple(&app, LogDirection::Tx, &routine_request, "RoutineControl SSH Enable");
     let routine_resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &routine_request, true)
@@ -349,7 +371,7 @@ pub fn enable_ssh(app: AppHandle, state: State<'_, AppState>) -> Result<SshResul
     })
 }
 
-/// Run a generic routine
+/// Run a generic routine with SDD prerequisite flow
 #[tauri::command]
 pub fn run_routine(
     app: AppHandle,
@@ -361,10 +383,18 @@ pub fn run_routine(
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
+    // Look up routine metadata for SDD flow requirements
+    let meta = find_routine_meta(routine_id);
+    let needs_security = meta.as_ref().map_or(false, |m| m.needs_security);
+    let needs_pending = meta.as_ref().map_or(false, |m| m.needs_pending);
+
+    // Run SDD prerequisite flow (TesterPresent + Extended Session + optional Security)
+    sdd_prerequisite_flow(&app, channel, needs_security)?;
+
+    // Send RoutineControl Start
     let mut request = vec![0x31, 0x01, (routine_id >> 8) as u8, (routine_id & 0xFF) as u8];
     request.extend_from_slice(&data);
 
-    let needs_pending = matches!(routine_id, 0x603E | 0x6038 | 0x0E00 | 0x0E01 | 0x0E02);
     let resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &request, needs_pending)
         .map_err(|e| format!("Routine 0x{:04X} failed: {}", routine_id, e))?;
 
@@ -422,18 +452,24 @@ pub fn list_routines() -> Vec<RoutineInfo> {
             name: "SSH Enable".into(),
             description: "Enable SSH access on IMC (0x603E)".into(),
             category: "Diagnostics".into(),
+            needs_security: true,
+            needs_pending: true,
         },
         RoutineInfo {
             routine_id: routine::ENG_SCREEN_LVL2,
             name: "Engineering Screen Level 2".into(),
             description: "Enable engineering screen level 2 (0x603D)".into(),
             category: "Diagnostics".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         RoutineInfo {
             routine_id: routine::POWER_OVERRIDE,
             name: "IMC Power Override".into(),
             description: "Override IMC power state (0x6043)".into(),
             category: "Diagnostics".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         // Configuration
         RoutineInfo {
@@ -441,30 +477,40 @@ pub fn list_routines() -> Vec<RoutineInfo> {
             name: "Configure Linux to Hardware".into(),
             description: "Reconfigure IMC Linux environment (0x6038)".into(),
             category: "Configuration".into(),
+            needs_security: true,
+            needs_pending: true,
         },
         RoutineInfo {
             routine_id: routine::VIN_LEARN,
             name: "VIN Learn".into(),
             description: "Learn VIN to ECU (0x0404)".into(),
             category: "Configuration".into(),
+            needs_security: false,
+            needs_pending: false,
         },
         RoutineInfo {
             routine_id: routine::RETRIEVE_CCF,
             name: "Retrieve CCF".into(),
             description: "Retrieve Central Configuration (0x0E00)".into(),
             category: "Configuration".into(),
+            needs_security: false,
+            needs_pending: true,
         },
         RoutineInfo {
             routine_id: routine::REPORT_CCF,
             name: "Report CCF".into(),
             description: "Report Central Configuration (0x0E01)".into(),
             category: "Configuration".into(),
+            needs_security: false,
+            needs_pending: true,
         },
         RoutineInfo {
             routine_id: routine::LIST_CCF,
             name: "List CCF".into(),
             description: "List Central Configuration (0x0E02)".into(),
             category: "Configuration".into(),
+            needs_security: false,
+            needs_pending: true,
         },
         // Recovery
         RoutineInfo {
@@ -472,12 +518,16 @@ pub fn list_routines() -> Vec<RoutineInfo> {
             name: "Recover Locked DVD Region".into(),
             description: "Recover locked DVD region (0x603F)".into(),
             category: "Recovery".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         RoutineInfo {
             routine_id: routine::RESET_PIN,
             name: "Reset Customer Pin".into(),
             description: "Reset customer PIN code (0x6042)".into(),
             category: "Recovery".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         // Advanced
         RoutineInfo {
@@ -485,18 +535,24 @@ pub fn list_routines() -> Vec<RoutineInfo> {
             name: "Control Auxiliary Fan".into(),
             description: "Control auxiliary fan (0x6041)".into(),
             category: "Advanced".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         RoutineInfo {
             routine_id: routine::GEN_KEY,
             name: "Generate Key".into(),
             description: "Generate cryptographic key (0x6045)".into(),
             category: "Advanced".into(),
+            needs_security: true,
+            needs_pending: false,
         },
         RoutineInfo {
             routine_id: routine::SHARED_SECRET,
             name: "Shared Secret".into(),
             description: "Compute shared secret (0x6046)".into(),
             category: "Advanced".into(),
+            needs_security: true,
+            needs_pending: false,
         },
     ]
 }
@@ -624,6 +680,27 @@ mod tests {
         assert!(routines.iter().any(|r| r.category == "Configuration"));
         assert!(routines.iter().any(|r| r.category == "Recovery"));
         assert!(routines.iter().any(|r| r.category == "Advanced"));
+    }
+
+    #[test]
+    fn test_list_routines_security_flags() {
+        let routines = list_routines();
+        // SSH Enable needs security
+        let ssh = routines.iter().find(|r| r.routine_id == 0x603E).unwrap();
+        assert!(ssh.needs_security);
+        assert!(ssh.needs_pending);
+        // VIN Learn does NOT need security
+        let vin = routines.iter().find(|r| r.routine_id == 0x0404).unwrap();
+        assert!(!vin.needs_security);
+        assert!(!vin.needs_pending);
+        // Retrieve CCF: no security, but needs pending
+        let ccf = routines.iter().find(|r| r.routine_id == 0x0E00).unwrap();
+        assert!(!ccf.needs_security);
+        assert!(ccf.needs_pending);
+        // Engineering Screen: security, no pending
+        let eng = routines.iter().find(|r| r.routine_id == 0x603D).unwrap();
+        assert!(eng.needs_security);
+        assert!(!eng.needs_pending);
     }
 
     #[test]

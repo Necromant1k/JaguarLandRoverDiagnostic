@@ -350,6 +350,41 @@ fn describe_0404(status: Option<u8>) -> String {
     }
 }
 
+// ─── SDD Prerequisite Flow ───────────────────────────────────────────
+
+/// Execute SDD prerequisite flow: TesterPresent → Extended Session → Security Access (if needed)
+/// This is the standard JLR SDD sequence required before executing secured routines.
+pub fn sdd_prerequisite_flow<C: Channel>(
+    client: &UdsClient<C>,
+    needs_security: bool,
+) -> Result<(), UdsError> {
+    // 1. Wake up with TesterPresent
+    tester_present(client)?;
+
+    // 2. Switch to extended diagnostic session
+    diagnostic_session(client, DiagSession::Extended)?;
+
+    // 3. Security access (if required)
+    if needs_security {
+        security_access(client, 0x11, 0x12, &keygen::DC0314_CONSTANTS)?;
+    }
+
+    Ok(())
+}
+
+/// Execute a full routine with SDD prerequisite flow.
+/// TesterPresent → Extended Session → Security Access (if needed) → RoutineControl Start
+pub fn execute_routine_sdd<C: Channel>(
+    client: &UdsClient<C>,
+    routine_id: u16,
+    data: &[u8],
+    needs_security: bool,
+    needs_pending: bool,
+) -> Result<RoutineResult, UdsError> {
+    sdd_prerequisite_flow(client, needs_security)?;
+    routine_start(client, routine_id, data, needs_pending)
+}
+
 // ─── SSH Enable flow ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -361,17 +396,7 @@ pub struct SshResult {
 
 /// Full SSH enable flow: TesterPresent → ExtendedSession → SecurityAccess → Routine 0x603E
 pub fn enable_ssh<C: Channel>(client: &UdsClient<C>) -> Result<SshResult, UdsError> {
-    // 1. Wake up with TesterPresent
-    tester_present(client)?;
-
-    // 2. Switch to extended diagnostic session
-    diagnostic_session(client, DiagSession::Extended)?;
-
-    // 3. Security access level 0x11/0x12
-    security_access(client, 0x11, 0x12, &keygen::DC0314_CONSTANTS)?;
-
-    // 4. Start routine 0x603E (SSH enable) with data byte 0x01
-    let result = routine_start(client, routine::SSH_ENABLE, &[0x01], true)?;
+    let result = execute_routine_sdd(client, routine::SSH_ENABLE, &[0x01], true, true)?;
 
     Ok(SshResult {
         success: true,
@@ -1040,6 +1065,80 @@ mod tests {
                 assert_eq!(nrc, NegativeResponseCode::ConditionsNotCorrect);
             }
             other => panic!("Expected NRC, got {:?}", other),
+        }
+    }
+
+    // ─── execute_routine_sdd tests ─────────────────────────────
+
+    #[test]
+    fn test_execute_routine_sdd_with_security() {
+        let mock = MockChannel::new();
+        // TesterPresent
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended session
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        // Security seed
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        // Security key (computed)
+        let seed_int = 0x112233u32;
+        let key_int = keygen::keygen_mki(seed_int, &keygen::DC0314_CONSTANTS);
+        let key_bytes = [
+            ((key_int >> 16) & 0xFF) as u8,
+            ((key_int >> 8) & 0xFF) as u8,
+            (key_int & 0xFF) as u8,
+        ];
+        let mut key_req = vec![0x27, 0x12];
+        key_req.extend_from_slice(&key_bytes);
+        mock.expect_request(ecu_addr::IMC_TX, key_req, vec![0x67, 0x12]);
+        // Routine 0x603D
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x3D],
+            vec![0x71, 0x01, 0x60, 0x3D],
+        );
+
+        let client = make_imc_client(mock);
+        let result = execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap();
+        assert_eq!(result.routine_id, 0x603D);
+    }
+
+    #[test]
+    fn test_execute_routine_sdd_without_security() {
+        let mock = MockChannel::new();
+        // TesterPresent
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended session
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        // NO security step — goes straight to routine
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x04, 0x04],
+            vec![0x71, 0x01, 0x04, 0x04, 0x20],
+        );
+
+        let client = make_imc_client(mock);
+        let result = execute_routine_sdd(&client, routine::VIN_LEARN, &[], false, false).unwrap();
+        assert_eq!(result.routine_id, 0x0404);
+        assert_eq!(result.status, Some(0x20));
+    }
+
+    #[test]
+    fn test_execute_routine_sdd_security_fails() {
+        let mock = MockChannel::new();
+        // TesterPresent
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended session
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        // Security seed fails — exceeded attempts
+        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x7F, 0x27, 0x36]);
+
+        let client = make_imc_client(mock);
+        let err = execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap_err();
+        match err {
+            UdsError::NegativeResponse { nrc, .. } => {
+                assert_eq!(nrc, NegativeResponseCode::ExceededNumberOfAttempts);
+            }
+            other => panic!("Expected ExceededNumberOfAttempts, got {:?}", other),
         }
     }
 

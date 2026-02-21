@@ -26,6 +26,8 @@ export interface RoutineInfo {
   name: string;
   description: string;
   category: string;
+  needs_security: boolean;
+  needs_pending: boolean;
 }
 
 export interface RoutineResponse {

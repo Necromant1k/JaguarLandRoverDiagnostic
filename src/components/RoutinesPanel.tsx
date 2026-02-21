@@ -74,6 +74,11 @@ export default function RoutinesPanel({ connected }: Props) {
                       <span className="text-sm font-medium text-gray-200">
                         {r.name}
                       </span>
+                      {r.needs_security && (
+                        <span className="text-yellow-500 text-xs" title="Requires security access">
+                          &#x1F512;
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-gray-500 mt-0.5">{r.description}</p>
                   </div>
