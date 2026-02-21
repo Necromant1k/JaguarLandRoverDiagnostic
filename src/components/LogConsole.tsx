@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import * as api from "../lib/tauri";
 import type { LogEntry } from "../types";
 
 interface Props {
@@ -20,12 +21,39 @@ const directionLabels: Record<string, string> = {
   Pending: "...",
 };
 
+function formatLogText(logs: LogEntry[]): string {
+  return logs
+    .map(
+      (e) =>
+        `${e.timestamp} [${e.direction.padEnd(3)}] ${e.data_hex}${e.description ? " " + e.description : ""}`
+    )
+    .join("\n");
+}
+
 export default function LogConsole({ logs, onClear }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  const handleCopyAll = async () => {
+    try {
+      let text = "";
+      try {
+        text = await api.exportLogs();
+      } catch {
+        text = "UDS App Log\n---\n";
+      }
+      text += formatLogText(logs);
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+    }
+  };
 
   return (
     <div className="h-48 bg-bg-secondary border-t border-gray-700/50 flex flex-col shrink-0">
@@ -35,6 +63,12 @@ export default function LogConsole({ logs, onClear }: Props) {
         </span>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-600">{logs.length} entries</span>
+          <button
+            onClick={handleCopyAll}
+            className="text-xs text-gray-500 hover:text-gray-300"
+          >
+            {copied ? "Copied!" : "Copy All"}
+          </button>
           <button
             onClick={onClear}
             className="text-xs text-gray-500 hover:text-gray-300"

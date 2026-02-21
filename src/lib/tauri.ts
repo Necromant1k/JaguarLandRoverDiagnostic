@@ -57,3 +57,7 @@ export async function readDid(
 export async function listRoutines(): Promise<RoutineInfo[]> {
   return invoke<RoutineInfo[]>("list_routines");
 }
+
+export async function exportLogs(): Promise<string> {
+  return invoke<string>("export_logs");
+}

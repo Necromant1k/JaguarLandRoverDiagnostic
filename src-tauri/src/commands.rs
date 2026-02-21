@@ -701,6 +701,19 @@ fn send_read_did_on_ecu(
     send_read_did(app, channel, ecu_tx, did_id)
 }
 
+/// Export UDS logs as text (called from frontend "Copy Logs" button)
+#[tauri::command]
+pub fn export_logs() -> Result<String, String> {
+    // This returns system info — the actual UDS log entries are in the frontend state.
+    // This gives the user Rust-side context to paste alongside the UI logs.
+    let mut info = String::new();
+    info.push_str(&format!("UDS App v{}\n", env!("CARGO_PKG_VERSION")));
+    info.push_str(&format!("OS: {} {}\n", std::env::consts::OS, std::env::consts::ARCH));
+    info.push_str(&format!("Time: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+    info.push_str("---\n");
+    Ok(info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
