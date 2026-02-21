@@ -324,23 +324,37 @@ fn read_did_entry(
     emulator: Option<&EcuEmulatorManager>,
 ) -> EcuInfoEntry {
     let did_hex = format!("{:04X}", did_id);
-    match send_read_did(app, channel, tx_id, did_id, emulator) {
-        Ok(data) => {
-            let value = format_fn(&data);
-            emit_log_simple(app, LogDirection::Rx, &[], &format!("{} = {}", label, value));
-            EcuInfoEntry {
-                label: label.to_string(),
-                did_hex,
-                value: Some(value),
-                error: None,
+    let mut last_err = String::new();
+
+    // Retry once on timeout
+    for attempt in 0..2 {
+        match send_read_did(app, channel, tx_id, did_id, emulator) {
+            Ok(data) => {
+                let value = format_fn(&data);
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("{} = {}", label, value));
+                return EcuInfoEntry {
+                    label: label.to_string(),
+                    did_hex,
+                    value: Some(value),
+                    error: None,
+                };
+            }
+            Err(e) => {
+                last_err = e;
+                // Only retry on timeout, not on NRC (ECU explicitly rejected)
+                if !last_err.contains("Timeout") || attempt == 1 {
+                    break;
+                }
+                emit_log_simple(app, LogDirection::Tx, &[], &format!("{} timeout, retrying...", label));
             }
         }
-        Err(e) => EcuInfoEntry {
-            label: label.to_string(),
-            did_hex,
-            value: None,
-            error: Some(e),
-        },
+    }
+
+    EcuInfoEntry {
+        label: label.to_string(),
+        did_hex,
+        value: None,
+        error: Some(last_err),
     }
 }
 
@@ -407,6 +421,13 @@ fn format_temp(data: &[u8]) -> String {
 
 fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::IMC_TX;
+
+    // IMC requires extended session for most DIDs
+    emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent (IMC)");
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
     vec![
         read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, emulator),
         read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, emulator),
@@ -725,7 +746,7 @@ fn send_uds_request(
     let timeout = if wait_pending {
         std::time::Duration::from_secs(30)
     } else {
-        std::time::Duration::from_secs(5)
+        std::time::Duration::from_secs(2)
     };
     let start = std::time::Instant::now();
 
