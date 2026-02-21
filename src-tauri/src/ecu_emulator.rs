@@ -1,13 +1,10 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 
 use crate::j2534::types::*;
-use crate::uds::client::{LogDirection, LogEntry};
 use crate::uds::services::ecu_addr;
 
 // ─── ECU Identification ──────────────────────────────────────────────
@@ -195,18 +192,35 @@ impl EcuHandler for IpcHandler {
 
 // ─── ECU Emulator Manager ────────────────────────────────────────────
 
-/// Raw function pointers extracted from J2534Lib — these are Copy + Send.
-struct RawJ2534Fns {
-    read_msgs: unsafe extern "system" fn(u32, *mut PassThruMsg, *mut u32, u32) -> u32,
+/// CAN broadcast messages captured from a real car that are NOT present on a bench
+/// with only the IMC. These simulate BCM/GWM/IPC presence on the CAN bus.
+/// Format: (CAN ID, 8-byte data)
+const BROADCAST_MSGS: &[(u32, [u8; 8])] = &[
+    // From car CAN dump — IDs absent in bench-only dump
+    (0x070, [0xFF, 0x87, 0xD0, 0xFE, 0xFE, 0x3F, 0xFF, 0x03]),
+    (0x0B0, [0x00, 0x04, 0x32, 0x03, 0xF8, 0x0D, 0x35, 0x00]),
+    (0x0D0, [0xEC, 0x00, 0x42, 0x50, 0xE2, 0x69, 0xA8, 0x84]),
+    (0x154, [0x27, 0xC7, 0x07, 0xED, 0x07, 0xD9, 0x07, 0xBD]),
+    (0x1D0, [0x62, 0xFE, 0x00, 0x10, 0x80, 0x00, 0x80, 0x00]),
+    (0x270, [0x00, 0xE8, 0x50, 0x00, 0x83, 0xFE, 0x03, 0x00]),
+    (0x280, [0x00, 0x00, 0x03, 0xFE, 0x01, 0xFE, 0x13, 0xFE]),
+    (0x2A0, [0x80, 0x81, 0x40, 0x00, 0x5D, 0x44, 0x66, 0x0D]),
+    // Common IDs with car-specific data (bench has different values)
+    (0x030, [0x04, 0x00, 0x00, 0x00, 0x00, 0x1F, 0xFE, 0x70]),
+    (0x130, [0x02, 0x00, 0x50, 0x04, 0x04, 0x00, 0x00, 0x00]),
+    (0x140, [0x00, 0x6D, 0x83, 0x00, 0x00, 0x7F, 0x80, 0x00]),
+];
+
+/// Raw write-only function pointer for the broadcast thread.
+struct RawWriteFn {
     write_msgs: unsafe extern "system" fn(u32, *const PassThruMsg, *mut u32, u32) -> u32,
 }
 
-// SAFETY: The function pointers are raw fn pointers (not closures), obtained
-// from a loaded DLL that stays alive for the duration of the emulator.
-// They reference static code, not mutable state.
-unsafe impl Send for RawJ2534Fns {}
+unsafe impl Send for RawWriteFn {}
 
-/// Multi-ECU emulator manager. One reader thread dispatches by CAN ID.
+/// Multi-ECU emulator manager.
+/// - Software routing: try_handle() serves emulated ECU responses locally
+/// - CAN broadcast: write-only thread sends periodic messages to simulate ECU presence
 pub struct EcuEmulatorManager {
     running: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -214,57 +228,38 @@ pub struct EcuEmulatorManager {
 }
 
 impl EcuEmulatorManager {
-    /// Create a software-routing-only emulator (no background thread).
-    /// Requests are handled synchronously via try_handle() — no J2534 race condition.
-    pub fn new(ecus: Vec<EcuId>) -> Self {
-        Self {
-            running: Arc::new(AtomicBool::new(false)),
-            handle: None,
-            emulated_ecus: ecus,
-        }
-    }
-
-    /// Start the emulator manager with the specified ECUs and a CAN bus reader thread.
-    /// NOTE: The reader thread consumes ALL messages from the J2534 buffer,
-    /// which breaks reads for non-emulated ECUs. Prefer `new()` + software routing.
-    #[allow(dead_code)]
-    pub fn start(
+    /// Create emulator with software routing + CAN broadcast thread.
+    /// `can_channel_id` is a raw CAN channel (not ISO15765) for broadcast.
+    pub fn new_with_broadcast(
         lib: &Arc<crate::j2534::dll::J2534Lib>,
-        channel_id: u32,
-        app: AppHandle,
+        can_channel_id: u32,
         ecus: Vec<EcuId>,
     ) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
 
-        let fns = RawJ2534Fns {
-            read_msgs: lib.pass_thru_read_msgs,
+        let write_fn = RawWriteFn {
             write_msgs: lib.pass_thru_write_msgs,
         };
 
-        // Build dispatch table: tx_can_id → (rx_can_id, handler)
-        let mut handlers: HashMap<u32, (u32, Box<dyn EcuHandler>)> = HashMap::new();
-        let ecu_names: Vec<String> = ecus.iter().map(|e| e.name().to_string()).collect();
-
-        for ecu in &ecus {
-            let handler: Box<dyn EcuHandler> = match ecu {
-                EcuId::Bcm => Box::new(BcmHandler),
-                EcuId::Gwm => Box::new(GwmHandler),
-                EcuId::Ipc => Box::new(IpcHandler),
-            };
-            handlers.insert(ecu.tx_id(), (ecu.rx_id(), handler));
-        }
-
-        let emulated_ecus = ecus;
-
         let handle = thread::spawn(move || {
-            Self::emulator_loop(fns, channel_id, handlers, &running_clone, &app, &ecu_names);
+            Self::broadcast_loop(write_fn, can_channel_id, &running_clone);
         });
 
         Self {
             running,
             handle: Some(handle),
-            emulated_ecus,
+            emulated_ecus: ecus,
+        }
+    }
+
+    /// Create software-routing-only emulator (no CAN broadcast).
+    #[allow(dead_code)]
+    pub fn new(ecus: Vec<EcuId>) -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: ecus,
         }
     }
 
@@ -292,88 +287,34 @@ impl EcuEmulatorManager {
         None
     }
 
-    fn emulator_loop(
-        fns: RawJ2534Fns,
-        channel_id: u32,
-        handlers: HashMap<u32, (u32, Box<dyn EcuHandler>)>,
-        running: &AtomicBool,
-        app: &AppHandle,
-        ecu_names: &[String],
-    ) {
-        Self::emit_log(
-            app,
-            LogDirection::Rx,
-            &[],
-            &format!("ECU Emulator started: {}", ecu_names.join(", ")),
-        );
+    /// Write-only broadcast loop: sends CAN messages to simulate ECU presence.
+    /// Runs on a separate raw CAN channel — never reads, so it can't steal
+    /// ISO15765 responses from the client thread.
+    fn broadcast_loop(fns: RawWriteFn, can_channel_id: u32, running: &AtomicBool) {
+        // Small delay to let the channel settle after connect
+        thread::sleep(std::time::Duration::from_millis(100));
 
         while running.load(Ordering::Relaxed) {
-            let mut msgs = vec![PassThruMsg::default(); 4];
-            let mut num_msgs: u32 = msgs.len() as u32;
-
-            let ret = unsafe {
-                (fns.read_msgs)(channel_id, msgs.as_mut_ptr(), &mut num_msgs, 100)
-            };
-
-            // BufferEmpty (0x10) or timeout (0x09) are normal
-            if ret != 0 && ret != 0x10 && ret != 0x09 {
-                thread::sleep(std::time::Duration::from_millis(50));
-                continue;
-            }
-
-            msgs.truncate(num_msgs as usize);
-
-            for msg in &msgs {
-                let can_id = msg.can_id();
-                let payload = msg.payload();
-                if payload.is_empty() {
-                    continue;
+            for &(can_id, ref data) in BROADCAST_MSGS {
+                if !running.load(Ordering::Relaxed) {
+                    break;
                 }
 
-                // Dispatch by CAN ID to the appropriate handler
-                if let Some((rx_id, handler)) = handlers.get(&can_id) {
-                    if let Some(response) = handler.build_response(payload) {
-                        Self::emit_log(
-                            app,
-                            LogDirection::Rx,
-                            payload,
-                            &format!("{} EMU: intercepted 0x{:03X}", handler.name(), can_id),
-                        );
+                let mut msg = PassThruMsg::default();
+                msg.protocol_id = 5; // PROTOCOL_CAN
+                msg.data[0..4].copy_from_slice(&can_id.to_be_bytes());
+                msg.data[4..12].copy_from_slice(data);
+                msg.data_size = 12; // 4 bytes CAN ID + 8 bytes data
 
-                        let resp_msg = PassThruMsg::new_iso15765(*rx_id, &response);
-                        let mut num_sent: u32 = 1;
-                        let _ = unsafe {
-                            (fns.write_msgs)(channel_id, &resp_msg, &mut num_sent, 100)
-                        };
-
-                        Self::emit_log(
-                            app,
-                            LogDirection::Tx,
-                            &response,
-                            &format!("{} EMU: response sent", handler.name()),
-                        );
-                    }
-                }
+                let mut num_msgs: u32 = 1;
+                let _ = unsafe {
+                    (fns.write_msgs)(can_channel_id, &msg, &mut num_msgs, 50)
+                };
             }
+
+            // ~100ms cycle matches typical CAN bus timing
+            thread::sleep(std::time::Duration::from_millis(100));
         }
-
-        Self::emit_log(app, LogDirection::Rx, &[], "ECU Emulator stopped");
-    }
-
-    fn emit_log(app: &AppHandle, direction: LogDirection, data: &[u8], description: &str) {
-        let _ = app.emit(
-            "uds-log",
-            LogEntry {
-                direction,
-                data_hex: data
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                timestamp: chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                description: description.to_string(),
-            },
-        );
     }
 }
 

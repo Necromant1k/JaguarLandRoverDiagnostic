@@ -9,6 +9,8 @@ pub struct Connection {
     pub lib: Arc<J2534Lib>,
     pub device: J2534Device,
     pub channel: Option<J2534Channel>,
+    /// Raw CAN channel for broadcast emulation (separate from ISO15765 channel)
+    pub can_channel: Option<J2534Channel>,
     pub dll_path: String,
     pub emulator_manager: Option<EcuEmulatorManager>,
 }

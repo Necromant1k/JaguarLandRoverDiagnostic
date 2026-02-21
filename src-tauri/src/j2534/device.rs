@@ -83,6 +83,30 @@ impl J2534Device {
         })
     }
 
+    /// Connect a raw CAN channel (for broadcast messages)
+    pub fn connect_can(&self, baudrate: u32) -> Result<J2534Channel, String> {
+        let mut channel_id: u32 = 0;
+        let ret = unsafe {
+            (self.lib.pass_thru_connect)(
+                self.device_id,
+                PROTOCOL_CAN,
+                0, // flags
+                baudrate,
+                &mut channel_id,
+            )
+        };
+        if ret != 0 {
+            return Err(format!(
+                "PassThruConnect CAN failed: {}",
+                J2534Error::from_code(ret)
+            ));
+        }
+        Ok(J2534Channel {
+            lib: self.lib.clone(),
+            channel_id,
+        })
+    }
+
     pub fn device_id(&self) -> u32 {
         self.device_id
     }
@@ -150,6 +174,17 @@ impl J2534Channel {
             ));
         }
         Ok(filter_id)
+    }
+
+    /// Send a raw CAN frame (8 bytes max, for broadcast on a CAN channel)
+    pub fn send_raw_can(&self, can_id: u32, data: &[u8]) -> Result<(), String> {
+        let mut msg = PassThruMsg::default();
+        msg.protocol_id = PROTOCOL_CAN;
+        msg.data[0..4].copy_from_slice(&can_id.to_be_bytes());
+        let len = data.len().min(8);
+        msg.data[4..4 + len].copy_from_slice(&data[..len]);
+        msg.data_size = (4 + len) as u32;
+        self.send(&msg, 100)
     }
 
     /// Send a message on the channel

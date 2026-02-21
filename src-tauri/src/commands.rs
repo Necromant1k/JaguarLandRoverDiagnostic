@@ -201,6 +201,7 @@ pub fn connect(
         lib,
         device,
         channel: Some(channel),
+        can_channel: None,
         dll_path: path,
         emulator_manager: None,
     });
@@ -260,19 +261,31 @@ pub fn toggle_bench_mode(
         }
 
         let ecu_names: Vec<String> = ecu_ids.iter().map(|e| e.name().to_string()).collect();
-        // Software routing only — no background thread that would consume J2534 messages
-        let manager = crate::ecu_emulator::EcuEmulatorManager::new(ecu_ids);
+
+        // Open a raw CAN channel for broadcast (separate from the ISO15765 channel)
+        let can_channel = conn.device.connect_can(500000)?;
+        let can_channel_id = can_channel.channel_id();
+
+        // Software routing + CAN broadcast to simulate ECU presence on the bus
+        let manager = crate::ecu_emulator::EcuEmulatorManager::new_with_broadcast(
+            &conn.lib,
+            can_channel_id,
+            ecu_ids,
+        );
+        conn.can_channel = Some(can_channel);
         conn.emulator_manager = Some(manager);
         emit_log_simple(
             &app,
             LogDirection::Rx,
             &[],
-            &format!("Bench mode ON — emulating: {}", ecu_names.join(", ")),
+            &format!("Bench mode ON — emulating: {} (CAN broadcast active)", ecu_names.join(", ")),
         );
     } else {
         if let Some(mut mgr) = conn.emulator_manager.take() {
             mgr.stop();
         }
+        // Close the CAN broadcast channel
+        conn.can_channel = None;
         emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — emulation stopped");
     }
 
