@@ -23,6 +23,36 @@ describe("ConnectPanel", () => {
     expect(screen.getByText("Connect")).toBeInTheDocument();
   });
 
+  it("renders device dropdown with auto-detect option", () => {
+    render(<ConnectPanel {...defaultProps} />);
+    const select = screen.getByRole("combobox");
+    expect(select).toBeInTheDocument();
+    expect(screen.getByText("Auto-detect (first available)")).toBeInTheDocument();
+    expect(screen.getByText("Custom DLL path...")).toBeInTheDocument();
+  });
+
+  it("shows discovered devices in dropdown", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      { name: "MongoosePro JLR", dll_path: "C:\\test\\mongo.dll" },
+      { name: "Bosch VCI", dll_path: "C:\\test\\bosch.dll" },
+    ]);
+
+    render(<ConnectPanel {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("MongoosePro JLR")).toBeInTheDocument();
+      expect(screen.getByText("Bosch VCI")).toBeInTheDocument();
+    });
+  });
+
+  it("shows manual path input when Custom selected", async () => {
+    render(<ConnectPanel {...defaultProps} />);
+    const select = screen.getByRole("combobox");
+    fireEvent.change(select, { target: { value: "__manual__" } });
+
+    expect(screen.getByPlaceholderText(/Program Files/)).toBeInTheDocument();
+  });
+
   it("renders disconnect button when connected", () => {
     render(
       <ConnectPanel
@@ -78,26 +108,32 @@ describe("ConnectPanel", () => {
     expect(screen.getByText("2.3.4")).toBeInTheDocument();
     expect(screen.getByText("5.6.7")).toBeInTheDocument();
     expect(screen.getByText("04.04")).toBeInTheDocument();
+    expect(screen.getByText("test.dll")).toBeInTheDocument();
   });
 
   it("calls connect on button click", async () => {
-    mockInvoke.mockResolvedValue({
+    const deviceInfo = {
       firmware_version: "1.0",
       dll_version: "1.0",
       api_version: "04.04",
       dll_path: "test.dll",
-    });
+    };
+    mockInvoke
+      .mockResolvedValueOnce([]) // discover_devices
+      .mockResolvedValueOnce(deviceInfo); // connect
 
     render(<ConnectPanel {...defaultProps} />);
     fireEvent.click(screen.getByText("Connect"));
 
     await waitFor(() => {
-      expect(defaultProps.onConnected).toHaveBeenCalled();
+      expect(defaultProps.onConnected).toHaveBeenCalledWith(deviceInfo);
     });
   });
 
   it("shows error on failed connection", async () => {
-    mockInvoke.mockRejectedValueOnce([]).mockRejectedValue("Connection failed");
+    mockInvoke
+      .mockResolvedValueOnce([]) // discover_devices
+      .mockRejectedValueOnce("Connection failed"); // connect
 
     render(<ConnectPanel {...defaultProps} />);
     fireEvent.click(screen.getByText("Connect"));

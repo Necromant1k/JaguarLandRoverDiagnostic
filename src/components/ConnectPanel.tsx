@@ -15,16 +15,18 @@ const ECU_OPTIONS = [
   { id: "ipc", label: "IPC", address: "0x720" },
 ] as const;
 
+const AUTO_DETECT = "__auto__";
+const MANUAL_PATH = "__manual__";
+
 export default function ConnectPanel({
   connected,
   deviceInfo,
   onConnected,
   onDisconnected,
 }: Props) {
-  const [dllPath, setDllPath] = useState(
-    "C:\\Program Files (x86)\\Drew Technologies, Inc\\J2534\\MongoosePro JLR\\monpj432.dll"
-  );
   const [devices, setDevices] = useState<J2534DeviceEntry[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState(AUTO_DETECT);
+  const [manualPath, setManualPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [benchMode, setBenchMode] = useState(false);
@@ -33,14 +35,26 @@ export default function ConnectPanel({
   );
 
   useEffect(() => {
-    api.discoverDevices().then(setDevices).catch(() => {});
+    api.discoverDevices().then((d) => {
+      setDevices(d);
+      // If devices found, default to first device instead of auto
+      if (d.length > 0) {
+        setSelectedDevice(d[0].dll_path);
+      }
+    }).catch(() => {});
   }, []);
+
+  const getDllPath = (): string | undefined => {
+    if (selectedDevice === AUTO_DETECT) return undefined;
+    if (selectedDevice === MANUAL_PATH) return manualPath || undefined;
+    return selectedDevice; // dll_path of a discovered device
+  };
 
   const handleConnect = async () => {
     setLoading(true);
     setError(null);
     try {
-      const info = await api.connect(dllPath);
+      const info = await api.connect(getDllPath());
       onConnected(info);
     } catch (e) {
       setError(String(e));
@@ -78,7 +92,6 @@ export default function ConnectPanel({
     setSelectedEcus((prev) => {
       const next = new Set(prev);
       if (next.has(ecuId)) {
-        // Don't allow deselecting all
         if (next.size > 1) {
           next.delete(ecuId);
         }
@@ -89,47 +102,52 @@ export default function ConnectPanel({
     });
   };
 
+  const canConnect =
+    selectedDevice === AUTO_DETECT ||
+    (selectedDevice === MANUAL_PATH && manualPath.trim().length > 0) ||
+    (selectedDevice !== MANUAL_PATH && selectedDevice !== AUTO_DETECT);
+
   return (
     <div className="space-y-4 max-w-xl">
       <h2 className="text-lg font-bold text-accent">J2534 Connection</h2>
 
-      {/* DLL Path */}
+      {/* Device Selection */}
       <div className="card space-y-3">
         <label className="block text-xs text-gray-400 uppercase tracking-wider">
-          J2534 DLL Path
+          J2534 Device
         </label>
-        <input
-          type="text"
-          value={dllPath}
-          onChange={(e) => setDllPath(e.target.value)}
+        <select
+          value={selectedDevice}
+          onChange={(e) => setSelectedDevice(e.target.value)}
           disabled={connected}
-          className="w-full bg-bg-primary border border-gray-600 rounded px-3 py-2 text-sm font-mono
+          className="w-full bg-bg-primary border border-gray-600 rounded px-3 py-2 text-sm
                      focus:border-accent focus:outline-none disabled:opacity-50"
-          placeholder="Path to J2534 DLL..."
-        />
+        >
+          <option value={AUTO_DETECT}>Auto-detect (first available)</option>
+          {devices.map((d) => (
+            <option key={d.dll_path} value={d.dll_path}>
+              {d.name}
+            </option>
+          ))}
+          <option value={MANUAL_PATH}>Custom DLL path...</option>
+        </select>
 
-        {devices.length > 0 && !connected && (
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              Detected devices:
-            </label>
-            {devices.map((d) => (
-              <button
-                key={d.dll_path}
-                onClick={() => setDllPath(d.dll_path)}
-                className="block text-xs text-accent hover:underline"
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
+        {selectedDevice === MANUAL_PATH && !connected && (
+          <input
+            type="text"
+            value={manualPath}
+            onChange={(e) => setManualPath(e.target.value)}
+            className="w-full bg-bg-primary border border-gray-600 rounded px-3 py-2 text-sm font-mono
+                       focus:border-accent focus:outline-none"
+            placeholder="C:\Program Files (x86)\...\device.dll"
+          />
         )}
 
         <div className="flex gap-2">
           {!connected ? (
             <button
               onClick={handleConnect}
-              disabled={loading || !dllPath}
+              disabled={loading || !canConnect}
               className="btn btn-primary"
             >
               {loading ? "Connecting..." : "Connect"}
@@ -155,6 +173,8 @@ export default function ConnectPanel({
         <div className="card space-y-2">
           <h3 className="text-sm font-semibold text-gray-300">Device Info</h3>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+            <span className="text-gray-500">Device</span>
+            <span className="font-mono">{deviceInfo.dll_path.split("\\").pop()}</span>
             <span className="text-gray-500">Firmware</span>
             <span className="font-mono">{deviceInfo.firmware_version}</span>
             <span className="text-gray-500">DLL Version</span>
@@ -224,7 +244,7 @@ export default function ConnectPanel({
               <span className="text-ok">Connected to Mongoose Pro</span>
             ) : (
               <span className="text-gray-400">
-                Not connected — plug in Mongoose Pro cable and click Connect
+                Not connected — select device and click Connect
               </span>
             )}
           </span>

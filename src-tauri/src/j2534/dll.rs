@@ -86,7 +86,8 @@ impl J2534Lib {
     }
 }
 
-/// Discover J2534 DLL paths from Windows registry
+/// Discover J2534 DLL paths from Windows registry.
+/// Searches both native and WOW6432Node paths to catch all devices.
 #[cfg(target_os = "windows")]
 pub fn discover_j2534_dlls() -> Vec<(String, PathBuf)> {
     use winreg::enums::*;
@@ -95,15 +96,31 @@ pub fn discover_j2534_dlls() -> Vec<(String, PathBuf)> {
     let mut results = Vec::new();
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
 
-    let registry_path = r"SOFTWARE\PassThruSupport.04.04";
-    if let Ok(key) = hklm.open_subkey_with_flags(registry_path, KEY_READ | KEY_WOW64_32KEY) {
-        for name in key.enum_keys().filter_map(|k| k.ok()) {
-            if let Ok(subkey) = key.open_subkey_with_flags(&name, KEY_READ) {
-                if let Ok(dll_path) = subkey.get_value::<String, _>("FunctionLibrary") {
-                    let device_name = subkey
-                        .get_value::<String, _>("Name")
-                        .unwrap_or_else(|_| name.clone());
-                    results.push((device_name, PathBuf::from(dll_path)));
+    // Search both registry views — 32-bit and 64-bit
+    let registry_paths = [
+        (r"SOFTWARE\PassThruSupport.04.04", KEY_READ | KEY_WOW64_64KEY),
+        (r"SOFTWARE\PassThruSupport.04.04", KEY_READ | KEY_WOW64_32KEY),
+    ];
+
+    let mut seen_dlls = std::collections::HashSet::new();
+
+    for (path, flags) in &registry_paths {
+        if let Ok(key) = hklm.open_subkey_with_flags(path, *flags) {
+            for name in key.enum_keys().filter_map(|k| k.ok()) {
+                if let Ok(subkey) = key.open_subkey_with_flags(&name, KEY_READ) {
+                    if let Ok(dll_path) = subkey.get_value::<String, _>("FunctionLibrary") {
+                        // Deduplicate by DLL path (case-insensitive)
+                        let dll_lower = dll_path.to_lowercase();
+                        if seen_dlls.contains(&dll_lower) {
+                            continue;
+                        }
+                        seen_dlls.insert(dll_lower);
+
+                        let device_name = subkey
+                            .get_value::<String, _>("Name")
+                            .unwrap_or_else(|_| name.clone());
+                        results.push((device_name, PathBuf::from(dll_path)));
+                    }
                 }
             }
         }

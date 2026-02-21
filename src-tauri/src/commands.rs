@@ -98,9 +98,16 @@ pub fn connect(
     }
 
     let path = dll_path.unwrap_or_else(|| {
-        dll::default_mongoose_dll_path()
-            .to_string_lossy()
-            .to_string()
+        // Auto-detect: pick first discovered device, fall back to default Mongoose path
+        let devices = dll::discover_j2534_dlls();
+        if let Some((name, p)) = devices.first() {
+            log::info!("Auto-detected J2534 device: {} at {}", name, p.display());
+            p.to_string_lossy().to_string()
+        } else {
+            dll::default_mongoose_dll_path()
+                .to_string_lossy()
+                .to_string()
+        }
     });
 
     emit_log_simple(
