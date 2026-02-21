@@ -13,6 +13,17 @@ pub enum LogDirection {
     Pending,
 }
 
+impl std::fmt::Display for LogDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogDirection::Tx => write!(f, "TX"),
+            LogDirection::Rx => write!(f, "RX"),
+            LogDirection::Error => write!(f, "ERR"),
+            LogDirection::Pending => write!(f, "..."),
+        }
+    }
+}
+
 /// Log entry for UDS communication
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LogEntry {

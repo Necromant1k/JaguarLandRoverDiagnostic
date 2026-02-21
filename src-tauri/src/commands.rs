@@ -50,6 +50,13 @@ pub struct J2534DeviceEntry {
 }
 
 fn emit_log(app: &AppHandle, entry: LogEntry) {
+    log::info!(
+        "[UDS] {} [{}] {}{}",
+        entry.timestamp,
+        entry.direction,
+        entry.data_hex,
+        if entry.description.is_empty() { String::new() } else { format!(" {}", entry.description) }
+    );
     let _ = app.emit("uds-log", entry);
 }
 
