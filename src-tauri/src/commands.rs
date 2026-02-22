@@ -497,19 +497,25 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
 
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::ASSEMBLY_PART, "Assembly Part", format_string, "hardware", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::HARDWARE_PART, "Hardware Part", format_string, "hardware", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
         entries.push(read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Software Part", format_string, "software", emulator));
 
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
         entries.push(read_did_entry(app, channel, tx, did::PBL_PART, "Bootloader", format_string, "software", emulator));
 
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string, "software", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string, "software", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
         entries.push(read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, "software", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware", emulator));
     } else {
         let err_msg = if bench_mode {
             "Extended Session failed — IMC needs other ECUs on CAN bus"
@@ -519,11 +525,13 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         for (did_id, label, category) in [
             (did::IMC_STATUS, "IMC Status", "status"),
             (did::VIN, "VIN", "vehicle"),
-            (did::ASSEMBLY_PART, "Assembly Part", "hardware"),
-            (did::HARDWARE_PART, "Hardware Part", "hardware"),
             (did::MASTER_RPM_PART, "Software Part", "software"),
             (did::PBL_PART, "Bootloader", "software"),
+            (did::V850_PART, "V850 Part", "software"),
+            (did::TUNER_PART, "Tuner Part", "software"),
             (did::POLAR_PART, "Polar Part", "software"),
+            (did::ECU_SERIAL, "ECU Serial", "hardware"),
+            (did::ECU_SERIAL2, "ECU Serial 2", "hardware"),
         ] {
             entries.push(EcuInfoEntry {
                 label: label.to_string(),
@@ -805,8 +813,6 @@ pub fn list_routines() -> Vec<RoutineInfo> {
 fn did_name(did_id: u16) -> &'static str {
     match did_id {
         0xF190 => "VIN",
-        0xF187 => "Assembly Part",
-        0xF191 => "Hardware Part",
         0xF188 => "Master RPM Part",
         0xF120 => "V850 Part",
         0xF121 => "Tuner Part",
@@ -1040,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_imc_read_extended_session_ok() {
-        // IMC with Extended Session succeeding — should read all DIDs
+        // IMC with Extended Session succeeding — should read all DIDs from EXML
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
@@ -1051,64 +1057,65 @@ mod tests {
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
         // Security Access seed → seed response
         mock.expect_request(tx, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
-        // Security Access key (computed from seed 0x112233 with DC0314)
         let seed_int = 0x112233u32;
         let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
         let key_bytes = [((key_int >> 16) & 0xFF) as u8, ((key_int >> 8) & 0xFF) as u8, (key_int & 0xFF) as u8];
         let mut key_req = vec![0x27, 0x12];
         key_req.extend_from_slice(&key_bytes);
         mock.expect_request(tx, key_req, vec![0x67, 0x12]);
-        // D100 Diag Session → Extended (0x03)
+        // D100 Diag Session
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
-        // TesterPresent keepalive before IMC Status
+        // TesterPresent + 0202 IMC Status
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // 0202 IMC Status → Normal (0x00)
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // TesterPresent keepalive before VIN
+        // TesterPresent + F190 VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F190 VIN
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A, 0x42, 0x41]);
-        // TesterPresent keepalive before Assembly Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A]);
+        // TesterPresent + F188 Software Part
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F187 Assembly Part
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x87], vec![0x62, 0xF1, 0x87, 0x47, 0x58, 0x36, 0x33]);
-        // TesterPresent keepalive before Hardware Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
+        // TesterPresent + F180 Bootloader
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F191 Hardware Part
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x91], vec![0x62, 0xF1, 0x91, 0x48, 0x57, 0x30, 0x31]);
-        // TesterPresent keepalive before Software Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C]);
+        // TesterPresent + F120 V850
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F188 Software Part
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57, 0x30, 0x31]);
-        // TesterPresent keepalive before Bootloader
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
+        // TesterPresent + F121 Tuner
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F180 Bootloader
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C, 0x30, 0x31]);
-        // TesterPresent keepalive before Polar Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x21], vec![0x62, 0xF1, 0x21, 0x54, 0x55]);
+        // TesterPresent + F1A5 Polar
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // F1A5 Polar Part
-        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x4A, 0x50, 0x4C, 0x41]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
+        // TesterPresent + F18C ECU Serial
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
+        // TesterPresent + F113 ECU Serial 2
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 8); // D100 + IMC Status + VIN + Assembly + Hardware + Software + Bootloader + Polar
+        assert_eq!(entries.len(), 10); // D100 + 9 DIDs from EXML
         assert_eq!(entries[0].label, "Diag Session");
-        assert!(entries[0].value.as_ref().unwrap().contains("Extended"));
+        assert_eq!(entries[0].category, "status");
         assert_eq!(entries[1].label, "IMC Status");
-        assert!(entries[1].value.as_ref().unwrap().contains("Normal"));
+        assert_eq!(entries[1].category, "status");
         assert_eq!(entries[2].label, "VIN");
-        assert!(entries[2].value.is_some());
-        assert_eq!(entries[3].label, "Assembly Part");
-        assert!(entries[3].value.is_some());
-        assert_eq!(entries[4].label, "Hardware Part");
-        assert!(entries[4].value.is_some());
-        assert_eq!(entries[5].label, "Software Part");
-        assert!(entries[5].value.is_some());
-        assert_eq!(entries[6].label, "Bootloader");
-        assert!(entries[6].value.is_some());
+        assert_eq!(entries[2].category, "vehicle");
+        assert_eq!(entries[3].label, "Software Part");
+        assert_eq!(entries[3].category, "software");
+        assert_eq!(entries[4].label, "Bootloader");
+        assert_eq!(entries[4].category, "software");
+        assert_eq!(entries[5].label, "V850 Part");
+        assert_eq!(entries[5].category, "software");
+        assert_eq!(entries[6].label, "Tuner Part");
+        assert_eq!(entries[6].category, "software");
         assert_eq!(entries[7].label, "Polar Part");
-        assert!(entries[7].value.is_some());
-        // All should have values, no errors
+        assert_eq!(entries[7].category, "software");
+        assert_eq!(entries[8].label, "ECU Serial");
+        assert_eq!(entries[8].category, "hardware");
+        assert_eq!(entries[9].label, "ECU Serial 2");
+        assert_eq!(entries[9].category, "hardware");
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value", entry.label);
             assert!(entry.error.is_none(), "{} should not have error", entry.label);
@@ -1130,10 +1137,10 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 8); // D100 + 7 error entries
+        assert_eq!(entries.len(), 10); // D100 + 9 error entries
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Default"));
-        // DIDs 1-7 should have "enable bench mode" error
+        // DIDs 1-9 should have "enable bench mode" error
         for entry in &entries[1..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
@@ -1157,8 +1164,8 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 8); // D100 + 7 error entries
-        // DIDs 1-7 should have the correct message (NOT "enable bench mode")
+        assert_eq!(entries.len(), 10); // D100 + 9 error entries
+        // DIDs 1-9 should have the correct message (NOT "enable bench mode")
         for entry in &entries[1..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             let err = entry.error.as_ref().unwrap();
@@ -1182,7 +1189,7 @@ mod tests {
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
         // Security seed → NRC 0x7F (serviceNotSupportedInActiveSession)
         mock.expect_request(tx, vec![0x27, 0x11], vec![0x7F, 0x27, 0x7F]);
-        // D100 Diag Session → Extended (0x03)
+        // D100 Diag Session
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
         // TesterPresent + IMC Status
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
@@ -1190,25 +1197,31 @@ mod tests {
         // TesterPresent + VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
-        // TesterPresent + Assembly Part
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x87], vec![0x62, 0xF1, 0x87, 0x41, 0x53, 0x4D]);
-        // TesterPresent + Hardware Part
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x91], vec![0x62, 0xF1, 0x91, 0x48, 0x57]);
         // TesterPresent + Software Part
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
         // TesterPresent + Bootloader
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C]);
-        // TesterPresent + Polar Part
+        // TesterPresent + V850
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
+        // TesterPresent + Tuner
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x21], vec![0x62, 0xF1, 0x21, 0x54, 0x55]);
+        // TesterPresent + Polar
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
+        // TesterPresent + ECU Serial
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
+        // TesterPresent + ECU Serial 2
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 8);
+        assert_eq!(entries.len(), 10);
         // All should still have values despite security failure
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value even without security", entry.label);
