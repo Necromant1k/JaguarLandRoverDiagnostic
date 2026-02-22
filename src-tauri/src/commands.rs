@@ -337,37 +337,27 @@ fn read_did_entry(
     emulator: Option<&EcuEmulatorManager>,
 ) -> EcuInfoEntry {
     let did_hex = format!("{:04X}", did_id);
-    let mut last_err = String::new();
 
-    // Retry once on timeout
-    for attempt in 0..2 {
-        match send_read_did(app, channel, tx_id, did_id, emulator) {
-            Ok(data) => {
-                let value = format_fn(&data);
-                emit_log_simple(app, LogDirection::Rx, &[], &format!("{} = {}", label, value));
-                return EcuInfoEntry {
-                    label: label.to_string(),
-                    did_hex,
-                    value: Some(value),
-                    error: None,
-                };
-            }
-            Err(e) => {
-                last_err = e;
-                // Only retry on timeout, not on NRC (ECU explicitly rejected)
-                if !last_err.contains("Timeout") || attempt == 1 {
-                    break;
-                }
-                emit_log_simple(app, LogDirection::Tx, &[], &format!("{} timeout, retrying...", label));
+    // Small delay between DID reads to avoid flooding the ECU
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    match send_read_did(app, channel, tx_id, did_id, emulator) {
+        Ok(data) => {
+            let value = format_fn(&data);
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("{} = {}", label, value));
+            EcuInfoEntry {
+                label: label.to_string(),
+                did_hex,
+                value: Some(value),
+                error: None,
             }
         }
-    }
-
-    EcuInfoEntry {
-        label: label.to_string(),
-        did_hex,
-        value: None,
-        error: Some(last_err),
+        Err(e) => EcuInfoEntry {
+            label: label.to_string(),
+            did_hex,
+            value: None,
+            error: Some(e),
+        },
     }
 }
 
@@ -732,6 +722,9 @@ fn did_name(did_id: u16) -> &'static str {
 
 /// Send raw UDS request on a channel and get response.
 /// If an emulator is provided and handles the tx_id, bypass J2534 entirely.
+/// Handles NRC 0x21 (busyRepeatRequest) with retries per SDD EXML:
+///   MAX_BUSY_ATTEMPTS=6, MAX_RETRY_PERIOD=6000ms
+/// Handles NRC 0x78 (responsePending) by continuing to wait.
 fn send_uds_request(
     app: &AppHandle,
     channel: &crate::j2534::device::J2534Channel,
@@ -752,14 +745,44 @@ fn send_uds_request(
         }
     }
 
-    // Build and send ISO15765 message
+    // SDD EXML: MAX_BUSY_ATTEMPTS=6 for NRC 0x21 (busyRepeatRequest)
+    let max_busy_retries: u32 = 6;
+
+    for busy_attempt in 0..=max_busy_retries {
+        if busy_attempt > 0 {
+            // Wait 1s before retry (SDD MAX_RETRY_PERIOD=6000ms / 6 attempts)
+            emit_log_simple(app, LogDirection::Tx, &[], &format!("Busy retry {}/{}", busy_attempt, max_busy_retries));
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
+            Ok(resp) => return Ok(resp),
+            Err(e) if e.contains("0x21") && busy_attempt < max_busy_retries => {
+                continue; // Retry
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err("Max busy retries exceeded".into())
+}
+
+/// Single attempt to send a UDS request and wait for response.
+fn send_uds_request_once(
+    app: &AppHandle,
+    channel: &crate::j2534::device::J2534Channel,
+    tx_id: u32,
+    request: &[u8],
+    wait_pending: bool,
+) -> Result<Vec<u8>, String> {
     let msg = PassThruMsg::new_iso15765(tx_id, request);
     channel.send(&msg, 2000)?;
 
+    // SDD EXML: ENG_RX_TIMEOUT=35000ms, ENG_MAX_PENDING_PERIOD=60000ms
     let timeout = if wait_pending {
-        std::time::Duration::from_secs(30)
+        std::time::Duration::from_secs(60)
     } else {
-        std::time::Duration::from_secs(2)
+        std::time::Duration::from_secs(10)
     };
     let start = std::time::Instant::now();
 
@@ -778,14 +801,13 @@ fn send_uds_request(
                 continue;
             }
 
-            // Log received data
             emit_log_simple(app, LogDirection::Rx, payload, "");
 
             // Negative response
             if payload[0] == 0x7F && payload.len() >= 3 {
                 if payload[2] == 0x78 {
                     emit_log_simple(app, LogDirection::Pending, payload, "Response pending...");
-                    continue; // Keep waiting
+                    continue;
                 }
                 let nrc = crate::uds::error::NegativeResponseCode::from_byte(payload[2]);
                 return Err(format!("NRC: {}", nrc));
