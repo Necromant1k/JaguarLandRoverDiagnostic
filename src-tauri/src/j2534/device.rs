@@ -66,7 +66,7 @@ impl J2534Device {
             (self.lib.pass_thru_connect)(
                 self.device_id,
                 PROTOCOL_ISO15765,
-                ISO15765_FRAME_PAD, // pad all frames to 8 bytes (EXML property 215=1)
+                0, // flags (FRAME_PAD is per-message, not connect flag)
                 baudrate,
                 &mut channel_id,
             )
