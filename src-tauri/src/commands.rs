@@ -528,9 +528,11 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
 
     if extended_ok {
         // DIDs to read: (DID, label, formatter, category)
+        // F111 (ECU Internal Number) goes first — confirmed working on bench
         // Removed F180 (PBL_PART) and F121 (TUNER_PART) — return NRC 0x31 on this IMC variant
         let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
             (did::IMC_STATUS, "IMC Status", format_imc_status, "status"),
+            (did::ECU_INTERNAL_NUMBER, "Firmware Part", format_string, "software"),
             (did::VIN, "VIN", format_string, "vehicle"),
             (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
             (did::V850_PART, "V850 Part", format_string, "software"),
@@ -564,6 +566,7 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         };
         for (did_id, label, category) in [
             (did::IMC_STATUS, "IMC Status", "status"),
+            (did::ECU_INTERNAL_NUMBER, "Firmware Part", "software"),
             (did::MASTER_RPM_PART, "Software Part", "software"),
             (did::V850_PART, "V850 Part", "software"),
             (did::POLAR_PART, "Polar Part", "software"),
@@ -1048,6 +1051,7 @@ pub fn list_routines() -> Vec<RoutineInfo> {
 fn did_name(did_id: u16) -> &'static str {
     match did_id {
         0xF190 => "VIN",
+        0xF111 => "Firmware Part",
         0xF188 => "Master RPM Part",
         0xD100 => "Diag Session",
         0x0202 => "IMC Status",
@@ -1143,6 +1147,15 @@ fn send_uds_request_once<R: tauri::Runtime>(
 
             // Negative response
             if payload[0] == 0x7F && payload.len() >= 3 {
+                // Check service ID matches our request — stale NRCs from previous
+                // requests (e.g. 7F 10 12 from a session change) must be ignored
+                if payload[1] != request[0] {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                        "Ignoring stale NRC for service 0x{:02X} (expected 0x{:02X})",
+                        payload[1], request[0]
+                    ));
+                    continue;
+                }
                 if payload[2] == 0x78 {
                     emit_log_simple(app, LogDirection::Pending, payload, "Response pending...");
                     continue;
@@ -1292,6 +1305,9 @@ mod tests {
         // TesterPresent + 0202 IMC Status
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
+        // TesterPresent + F111 Firmware Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57, 0x39, 0x33]);
         // TesterPresent + F190 VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A]);
@@ -1313,16 +1329,17 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None);
 
-        // D100 + 7 DIDs (removed F180 PBL and F121 Tuner — NRC 0x31 on real ECU)
-        assert_eq!(entries.len(), 8);
+        // D100 + 8 DIDs (added F111, removed F180 PBL and F121 Tuner)
+        assert_eq!(entries.len(), 9);
         assert_eq!(entries[0].label, "Diag Session");
         assert_eq!(entries[1].label, "IMC Status");
-        assert_eq!(entries[2].label, "VIN");
-        assert_eq!(entries[3].label, "Software Part");
-        assert_eq!(entries[4].label, "V850 Part");
-        assert_eq!(entries[5].label, "Polar Part");
-        assert_eq!(entries[6].label, "ECU Serial");
-        assert_eq!(entries[7].label, "ECU Serial 2");
+        assert_eq!(entries[2].label, "Firmware Part");
+        assert_eq!(entries[3].label, "VIN");
+        assert_eq!(entries[4].label, "Software Part");
+        assert_eq!(entries[5].label, "V850 Part");
+        assert_eq!(entries[6].label, "Polar Part");
+        assert_eq!(entries[7].label, "ECU Serial");
+        assert_eq!(entries[8].label, "ECU Serial 2");
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value", entry.label);
             assert!(entry.error.is_none(), "{} should not have error", entry.label);
@@ -1348,7 +1365,7 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 8); // D100 + VIN + ECU Serial + 5 error entries
+        assert_eq!(entries.len(), 9); // D100 + VIN + ECU Serial + 6 error entries
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Default"));
         // VIN and ECU Serial should have values from fallback
@@ -1398,7 +1415,7 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 8); // D100 + VIN + ECU Serial + 5 error entries
+        assert_eq!(entries.len(), 9); // D100 + VIN + ECU Serial + 6 error entries
         // VIN and ECU Serial should have values from fallback
         assert_eq!(entries[1].label, "VIN");
         assert!(entries[1].value.is_some(), "VIN should read in default session");
@@ -1431,6 +1448,9 @@ mod tests {
         // TesterPresent + IMC Status → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
+        // TesterPresent + F111 Firmware Part → OK
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
         // TesterPresent + VIN → NRC 0x31 (requestOutOfRange, simulating failure)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x31]);
@@ -1454,12 +1474,14 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 8);
-        // VIN should have error, rest should succeed (session was refreshed)
-        assert_eq!(entries[2].label, "VIN");
-        assert!(entries[2].error.is_some(), "VIN should have error");
-        assert_eq!(entries[3].label, "Software Part");
-        assert!(entries[3].value.is_some(), "Software Part should succeed after session refresh");
+        assert_eq!(entries.len(), 9);
+        // Firmware Part should work, VIN should fail, rest should succeed after refresh
+        assert_eq!(entries[2].label, "Firmware Part");
+        assert!(entries[2].value.is_some(), "Firmware Part should succeed");
+        assert_eq!(entries[3].label, "VIN");
+        assert!(entries[3].error.is_some(), "VIN should have error");
+        assert_eq!(entries[4].label, "Software Part");
+        assert!(entries[4].value.is_some(), "Software Part should succeed after session refresh");
     }
 
     // ─── NRC 0x21 retry tests ─────────────────────────────────────

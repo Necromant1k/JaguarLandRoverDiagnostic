@@ -26,6 +26,7 @@ pub enum DiagSession {
 /// Known DID identifiers
 pub mod did {
     pub const VIN: u16 = 0xF190;
+    pub const ECU_INTERNAL_NUMBER: u16 = 0xF111;
     pub const MASTER_RPM_PART: u16 = 0xF188;
     pub const V850_PART: u16 = 0xF120;
     pub const TUNER_PART: u16 = 0xF121;
