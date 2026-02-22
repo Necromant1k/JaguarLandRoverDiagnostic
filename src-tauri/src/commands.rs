@@ -338,9 +338,6 @@ fn read_did_entry(
 ) -> EcuInfoEntry {
     let did_hex = format!("{:04X}", did_id);
 
-    // Small delay between DID reads to avoid flooding the ECU
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
     match send_read_did(app, channel, tx_id, did_id, emulator) {
         Ok(data) => {
             let value = format_fn(&data);
@@ -424,25 +421,50 @@ fn format_temp(data: &[u8]) -> String {
 
 fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::IMC_TX;
+    let mut entries = Vec::new();
 
-    // IMC requires extended session for most DIDs
+    // Step 1: TesterPresent + try Extended Session
     emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent (IMC)");
     let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
-    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
 
-    vec![
-        read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, emulator),
-        read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, emulator),
-        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator),
-        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string, emulator),
-        read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string, emulator),
-        read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string, emulator),
-        read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, emulator),
-        read_did_entry(app, channel, tx, did::PBL_PART, "PBL Part", format_string, emulator),
-        read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, emulator),
-        read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, emulator),
-    ]
+    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
+    let extended_ok = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator).is_ok();
+
+    if !extended_ok {
+        emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — reading default-session DIDs only");
+    }
+
+    // Step 2: DIDs that work in Default session (session_01)
+    entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, emulator));
+
+    // Step 3: DIDs that need Extended session (from MDX EXML)
+    if extended_ok {
+        entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, emulator));
+        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator));
+        entries.push(read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string, emulator));
+        entries.push(read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, emulator));
+        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, emulator));
+        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, emulator));
+    } else {
+        // Can't read these without Extended Session — show note instead of wasting time
+        for (did_id, label) in [
+            (did::IMC_STATUS, "IMC Status"),
+            (did::VIN, "VIN"),
+            (did::MASTER_RPM_PART, "Master RPM Part"),
+            (did::POLAR_PART, "Polar Part"),
+            (did::ECU_SERIAL, "ECU Serial"),
+            (did::ECU_SERIAL2, "ECU Serial 2"),
+        ] {
+            entries.push(EcuInfoEntry {
+                label: label.to_string(),
+                did_hex: format!("{:04X}", did_id),
+                value: None,
+                error: Some("Requires Extended Session (enable bench mode)".to_string()),
+            });
+        }
+    }
+
+    entries
 }
 
 fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
