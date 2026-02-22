@@ -55,7 +55,7 @@ pub struct J2534DeviceEntry {
     pub dll_path: String,
 }
 
-fn emit_log(app: &AppHandle, entry: LogEntry) {
+fn emit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, entry: LogEntry) {
     log::info!(
         "[UDS] {} [{}] {}{}",
         entry.timestamp,
@@ -66,7 +66,7 @@ fn emit_log(app: &AppHandle, entry: LogEntry) {
     let _ = app.emit("uds-log", entry);
 }
 
-fn emit_log_simple(app: &AppHandle, direction: LogDirection, data: &[u8], description: &str) {
+fn emit_log_simple<R: tauri::Runtime>(app: &tauri::AppHandle<R>, direction: LogDirection, data: &[u8], description: &str) {
     emit_log(
         app,
         LogEntry {
@@ -337,7 +337,7 @@ pub fn read_ecu_info(app: AppHandle, state: State<'_, AppState>, ecu: String) ->
 fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) -> Result<Vec<EcuInfoEntry>, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     let emulator = conn.emulator_manager.as_ref();
     let entries = match ecu {
@@ -349,9 +349,9 @@ fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) 
     Ok(entries)
 }
 
-fn read_did_entry(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
+fn read_did_entry<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: &dyn crate::j2534::Channel,
     tx_id: u32,
     did_id: u16,
     label: &str,
@@ -441,9 +441,10 @@ fn format_temp(data: &[u8]) -> String {
     }
 }
 
-fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
+fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::IMC_TX;
     let mut entries = Vec::new();
+    let bench_mode = emulator.is_some();
 
     // Step 1: TesterPresent + try Extended Session
     emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent (IMC)");
@@ -468,7 +469,11 @@ fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, 
         entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, emulator));
         entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, emulator));
     } else {
-        // Can't read these without Extended Session — show note instead of wasting time
+        let err_msg = if bench_mode {
+            "Extended Session failed — IMC needs other ECUs on CAN bus"
+        } else {
+            "Requires Extended Session (enable bench mode)"
+        };
         for (did_id, label) in [
             (did::IMC_STATUS, "IMC Status"),
             (did::VIN, "VIN"),
@@ -481,7 +486,7 @@ fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, 
                 label: label.to_string(),
                 did_hex: format!("{:04X}", did_id),
                 value: None,
-                error: Some("Requires Extended Session (enable bench mode)".to_string()),
+                error: Some(err_msg.to_string()),
             });
         }
     }
@@ -489,7 +494,7 @@ fn read_imc_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, 
     entries
 }
 
-fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
+fn read_bcm_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::BCM_TX;
     vec![
         read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator),
@@ -501,9 +506,9 @@ fn read_bcm_info(app: &AppHandle, channel: &crate::j2534::device::J2534Channel, 
 
 /// SDD prerequisite flow: TesterPresent → Extended Session → Security Access (if needed)
 /// This is the standard JLR SDD sequence required before executing secured routines.
-fn sdd_prerequisite_flow(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
+fn sdd_prerequisite_flow<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: &dyn crate::j2534::Channel,
     needs_security: bool,
     emulator: Option<&EcuEmulatorManager>,
 ) -> Result<(), String> {
@@ -571,7 +576,7 @@ fn run_routine_inner(
 ) -> Result<RoutineResponse, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     // Look up routine metadata for SDD flow requirements
     let meta = find_routine_meta(routine_id);
@@ -628,7 +633,7 @@ pub fn read_did(
 ) -> Result<Vec<u8>, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel = conn.channel.as_ref().ok_or("No channel available")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     let data = send_read_did(&app, channel, ecu_tx, did_id, conn.emulator_manager.as_ref())
         .map_err(|e| log_err("read_did", e))?;
@@ -779,9 +784,9 @@ fn did_name(did_id: u16) -> &'static str {
 /// Handles NRC 0x21 (busyRepeatRequest) with retries per SDD EXML:
 ///   MAX_BUSY_ATTEMPTS=6, MAX_RETRY_PERIOD=6000ms
 /// Handles NRC 0x78 (responsePending) by continuing to wait.
-fn send_uds_request(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
+fn send_uds_request<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: &dyn crate::j2534::Channel,
     tx_id: u32,
     request: &[u8],
     wait_pending: bool,
@@ -819,9 +824,9 @@ fn send_uds_request(
 }
 
 /// Single attempt to send a UDS request and wait for response.
-fn send_uds_request_once(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
+fn send_uds_request_once<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: &dyn crate::j2534::Channel,
     tx_id: u32,
     request: &[u8],
     wait_pending: bool,
@@ -875,9 +880,9 @@ fn send_uds_request_once(
 }
 
 /// Read a DID on a channel, with optional emulator bypass
-fn send_read_did(
-    app: &AppHandle,
-    channel: &crate::j2534::device::J2534Channel,
+fn send_read_did<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: &dyn crate::j2534::Channel,
     tx_id: u32,
     did_id: u16,
     emulator: Option<&EcuEmulatorManager>,
@@ -915,6 +920,224 @@ pub fn export_logs() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::j2534::Channel;
+    use crate::j2534::mock::MockChannel;
+    use crate::uds::services::ecu_addr;
+
+    /// Helper: create a Tauri app for testing (no window, just the event system)
+    fn test_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        app.handle().clone()
+    }
+
+    /// Helper: create a MockChannel with IMC + BCM filters set up
+    fn setup_mock_channel() -> MockChannel {
+        let mock = MockChannel::new();
+        mock.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX).unwrap();
+        mock.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX).unwrap();
+        mock.setup_iso15765_filter(ecu_addr::GWM_TX, ecu_addr::GWM_RX).unwrap();
+        mock.setup_iso15765_filter(ecu_addr::IPC_TX, ecu_addr::IPC_RX).unwrap();
+        mock
+    }
+
+    // ─── BCM bench mode tests ───────────────────────────────────────
+
+    #[test]
+    fn test_bcm_read_with_emulator() {
+        // Bench mode ON: BCM is emulated, so all reads should return emulated values
+        // No mock channel expectations needed — emulator handles everything
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let emu = EcuEmulatorManager::new(vec![EcuId::Bcm]);
+        let entries = read_bcm_info(&app, &mock, Some(&emu));
+
+        assert_eq!(entries.len(), 4);
+        // VIN
+        assert_eq!(entries[0].label, "VIN");
+        assert!(entries[0].value.is_some(), "VIN should have emulated value");
+        assert!(entries[0].error.is_none());
+        assert!(entries[0].value.as_ref().unwrap().starts_with("SAJBA4BN"));
+        // Battery Voltage
+        assert_eq!(entries[1].label, "Battery Voltage");
+        assert!(entries[1].value.is_some());
+        assert!(entries[1].value.as_ref().unwrap().contains("V"));
+        // Battery SOC
+        assert_eq!(entries[2].label, "Battery SOC");
+        assert!(entries[2].value.is_some());
+        assert!(entries[2].value.as_ref().unwrap().contains("%"));
+        // Battery Temp
+        assert_eq!(entries[3].label, "Battery Temp");
+        assert!(entries[3].value.is_some());
+        assert!(entries[3].value.as_ref().unwrap().contains("°C"));
+    }
+
+    #[test]
+    fn test_bcm_read_without_emulator_timeout() {
+        // No bench mode, no real ECU → all reads should timeout/fail
+        let app = test_app();
+        let mock = setup_mock_channel();
+        mock.set_timeout_mode(true);
+        let entries = read_bcm_info(&app, &mock, None);
+
+        assert_eq!(entries.len(), 4);
+        for entry in &entries {
+            assert!(entry.error.is_some(), "{} should have error", entry.label);
+            assert!(entry.value.is_none(), "{} should not have value", entry.label);
+        }
+    }
+
+    // ─── IMC bench mode tests ───────────────────────────────────────
+
+    #[test]
+    fn test_imc_read_extended_session_ok() {
+        // IMC with Extended Session succeeding — should read all DIDs
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+
+        // TesterPresent → OK
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended Session → OK
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // D100 Diag Session → Extended (0x03)
+        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
+        // 0202 IMC Status → Normal (0x00)
+        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
+        // F190 VIN
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A, 0x42, 0x41]);
+        // F188 Master RPM
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x46, 0x57, 0x39, 0x33]);
+        // F1A5 Polar Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x4A, 0x50, 0x4C, 0x41]);
+        // F18C ECU Serial
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x30, 0x30, 0x31]);
+        // F113 ECU Serial 2
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x41, 0x42, 0x43]);
+
+        let entries = read_imc_info(&app, &mock, None);
+
+        assert_eq!(entries.len(), 7); // D100 + 6 DIDs
+        assert_eq!(entries[0].label, "Diag Session");
+        assert!(entries[0].value.as_ref().unwrap().contains("Extended"));
+        assert_eq!(entries[1].label, "IMC Status");
+        assert!(entries[1].value.as_ref().unwrap().contains("Normal"));
+        assert_eq!(entries[2].label, "VIN");
+        assert!(entries[2].value.is_some());
+        // All should have values, no errors
+        for entry in &entries {
+            assert!(entry.value.is_some(), "{} should have value", entry.label);
+            assert!(entry.error.is_none(), "{} should not have error", entry.label);
+        }
+    }
+
+    #[test]
+    fn test_imc_read_extended_session_fails_no_bench() {
+        // Extended Session fails, bench mode OFF → shows "enable bench mode" message
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended Session → NRC 0x12 (SubFunctionNotSupported)
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // D100 Diag Session → Default (0x01)
+        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
+
+        let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
+
+        assert_eq!(entries.len(), 7);
+        assert_eq!(entries[0].label, "Diag Session");
+        assert!(entries[0].value.as_ref().unwrap().contains("Default"));
+        // DIDs 1-6 should have "enable bench mode" error
+        for entry in &entries[1..] {
+            assert!(entry.error.is_some(), "{} should have error", entry.label);
+            assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
+                "{}: wrong error message: {:?}", entry.label, entry.error);
+        }
+    }
+
+    #[test]
+    fn test_imc_read_extended_session_fails_with_bench() {
+        // Extended Session fails, bench mode IS ON → should NOT say "enable bench mode"
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+        let emu = EcuEmulatorManager::new(vec![EcuId::Bcm]);
+
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended Session → NRC 0x12
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // D100 → Default
+        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
+
+        let entries = read_imc_info(&app, &mock, Some(&emu));
+
+        assert_eq!(entries.len(), 7);
+        // DIDs 1-6 should have the correct message (NOT "enable bench mode")
+        for entry in &entries[1..] {
+            assert!(entry.error.is_some(), "{} should have error", entry.label);
+            let err = entry.error.as_ref().unwrap();
+            assert!(!err.contains("enable bench mode"),
+                "{}: should NOT say 'enable bench mode' when bench IS on. Got: {}", entry.label, err);
+            assert!(err.contains("CAN bus"),
+                "{}: should mention CAN bus. Got: {}", entry.label, err);
+        }
+    }
+
+    // ─── DID name and format tests ──────────────────────────────────
+
+    #[test]
+    fn test_did_name_known() {
+        assert_eq!(did_name(0xF190), "VIN");
+        assert_eq!(did_name(0xF188), "Master RPM Part");
+        assert_eq!(did_name(0xD100), "Diag Session");
+        assert_eq!(did_name(0x0202), "IMC Status");
+        assert_eq!(did_name(0x402A), "Battery Voltage");
+    }
+
+    #[test]
+    fn test_did_name_unknown() {
+        assert_eq!(did_name(0x9999), "");
+    }
+
+    #[test]
+    fn test_format_diag_session_values() {
+        assert!(format_diag_session(&[0x01]).contains("Default"));
+        assert!(format_diag_session(&[0x02]).contains("Programming"));
+        assert!(format_diag_session(&[0x03]).contains("Extended"));
+        assert!(format_diag_session(&[0xFF]).contains("Unknown"));
+        assert!(format_diag_session(&[]).contains("Unknown"));
+    }
+
+    #[test]
+    fn test_format_imc_status_values() {
+        assert!(format_imc_status(&[0x00]).contains("Normal"));
+        assert!(format_imc_status(&[0x01]).contains("Booting"));
+        assert!(format_imc_status(&[0x05]).contains("Error"));
+        assert!(format_imc_status(&[0xAA]).contains("0xAA"));
+    }
+
+    #[test]
+    fn test_format_voltage() {
+        // 12.4V = raw 124 = 0x00, 0x7C
+        let v = format_voltage(&[0x00, 0x7C]);
+        assert!(v.contains("12.4"), "Expected 12.4V, got: {}", v);
+    }
+
+    #[test]
+    fn test_format_soc() {
+        assert_eq!(format_soc(&[85]), "85%");
+        assert_eq!(format_soc(&[]), "N/A");
+    }
+
+    #[test]
+    fn test_format_temp() {
+        // raw 25 → 25 - 40 = -15°C
+        assert!(format_temp(&[25]).contains("-15"));
+        assert_eq!(format_temp(&[]), "N/A");
+    }
+
+    // ─── Existing tests ─────────────────────────────────────────────
 
     #[test]
     fn test_list_routines_not_empty() {
