@@ -12,8 +12,8 @@ describe("EcuInfoSection", () => {
 
   it("auto-reads ECU info when connected", async () => {
     mockInvoke.mockResolvedValue([
-      { label: "VIN", did_hex: "F190", value: "SAJBA4BN0HA123456", error: null },
-      { label: "Battery Voltage", did_hex: "402A", value: "12.4 V", error: null },
+      { label: "VIN", did_hex: "F190", value: "SAJBA4BN0HA123456", error: null, category: "vehicle" },
+      { label: "Battery Voltage", did_hex: "402A", value: "12.4 V", error: null, category: "battery" },
     ]);
 
     render(<EcuInfoSection ecuId="bcm" connected={true} />);
@@ -27,7 +27,7 @@ describe("EcuInfoSection", () => {
 
   it("shows DID error inline", async () => {
     mockInvoke.mockResolvedValue([
-      { label: "VIN", did_hex: "F190", value: null, error: "NRC: serviceNotSupported" },
+      { label: "VIN", did_hex: "F190", value: null, error: "NRC: serviceNotSupported", category: "vehicle" },
     ]);
 
     render(<EcuInfoSection ecuId="imc" connected={true} />);
@@ -45,7 +45,7 @@ describe("EcuInfoSection", () => {
 
   it("has a refresh button", async () => {
     mockInvoke.mockResolvedValue([
-      { label: "VIN", did_hex: "F190", value: "VIN1", error: null },
+      { label: "VIN", did_hex: "F190", value: "VIN1", error: null, category: "vehicle" },
     ]);
 
     render(<EcuInfoSection ecuId="imc" connected={true} />);
@@ -56,7 +56,7 @@ describe("EcuInfoSection", () => {
 
     // Update mock for refresh
     mockInvoke.mockResolvedValue([
-      { label: "VIN", did_hex: "F190", value: "VIN2", error: null },
+      { label: "VIN", did_hex: "F190", value: "VIN2", error: null, category: "vehicle" },
     ]);
 
     fireEvent.click(screen.getByText("Refresh"));

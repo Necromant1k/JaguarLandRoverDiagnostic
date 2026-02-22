@@ -30,6 +30,7 @@ pub struct EcuInfoEntry {
     pub did_hex: String,
     pub value: Option<String>,
     pub error: Option<String>,
+    pub category: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -356,6 +357,7 @@ fn read_did_entry<R: tauri::Runtime>(
     did_id: u16,
     label: &str,
     format_fn: fn(&[u8]) -> String,
+    category: &str,
     emulator: Option<&EcuEmulatorManager>,
 ) -> EcuInfoEntry {
     let did_hex = format!("{:04X}", did_id);
@@ -369,6 +371,7 @@ fn read_did_entry<R: tauri::Runtime>(
                 did_hex,
                 value: Some(value),
                 error: None,
+                category: category.to_string(),
             }
         }
         Err(e) => EcuInfoEntry {
@@ -376,6 +379,7 @@ fn read_did_entry<R: tauri::Runtime>(
             did_hex,
             value: None,
             error: Some(e),
+            category: category.to_string(),
         },
     }
 }
@@ -457,36 +461,76 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — reading default-session DIDs only");
     }
 
-    // Step 2: DIDs that work in Default session (session_01)
-    entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, emulator));
-
-    // Step 3: DIDs that need Extended session (from MDX EXML)
+    // Step 2: Try Security Access (needed for VIN, software parts)
     if extended_ok {
-        entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, emulator));
-        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator));
-        entries.push(read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Master RPM Part", format_string, emulator));
-        entries.push(read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, emulator));
-        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, emulator));
-        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, emulator));
+        emit_log_simple(app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed (IMC)");
+        match send_uds_request(app, channel, tx, &[0x27, 0x11], false, emulator) {
+            Ok(seed_resp) if seed_resp.len() >= 5 => {
+                let seed_int = ((seed_resp[2] as u32) << 16) | ((seed_resp[3] as u32) << 8) | (seed_resp[4] as u32);
+                if seed_int != 0 {
+                    let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
+                    let key_bytes = [((key_int >> 16) & 0xFF) as u8, ((key_int >> 8) & 0xFF) as u8, (key_int & 0xFF) as u8];
+                    let mut key_req = vec![0x27, 0x12];
+                    key_req.extend_from_slice(&key_bytes);
+                    emit_log_simple(app, LogDirection::Tx, &key_req, "SecurityAccess SendKey (IMC)");
+                    match send_uds_request(app, channel, tx, &key_req, false, emulator) {
+                        Ok(_) => emit_log_simple(app, LogDirection::Rx, &[], "Security Access OK"),
+                        Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("Security Access failed: {} — continuing without", e)),
+                    }
+                } else {
+                    emit_log_simple(app, LogDirection::Rx, &[], "Already unlocked (zero seed)");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("Security seed failed: {} — continuing without", e)),
+        }
+    }
+
+    // Step 3: Read DIDs
+    entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status", emulator));
+
+    if extended_ok {
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, "status", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::ASSEMBLY_PART, "Assembly Part", format_string, "hardware", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::HARDWARE_PART, "Hardware Part", format_string, "hardware", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Software Part", format_string, "software", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::PBL_PART, "Bootloader", format_string, "software", emulator));
+
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, "software", emulator));
     } else {
         let err_msg = if bench_mode {
             "Extended Session failed — IMC needs other ECUs on CAN bus"
         } else {
             "Requires Extended Session (enable bench mode)"
         };
-        for (did_id, label) in [
-            (did::IMC_STATUS, "IMC Status"),
-            (did::VIN, "VIN"),
-            (did::MASTER_RPM_PART, "Master RPM Part"),
-            (did::POLAR_PART, "Polar Part"),
-            (did::ECU_SERIAL, "ECU Serial"),
-            (did::ECU_SERIAL2, "ECU Serial 2"),
+        for (did_id, label, category) in [
+            (did::IMC_STATUS, "IMC Status", "status"),
+            (did::VIN, "VIN", "vehicle"),
+            (did::ASSEMBLY_PART, "Assembly Part", "hardware"),
+            (did::HARDWARE_PART, "Hardware Part", "hardware"),
+            (did::MASTER_RPM_PART, "Software Part", "software"),
+            (did::PBL_PART, "Bootloader", "software"),
+            (did::POLAR_PART, "Polar Part", "software"),
         ] {
             entries.push(EcuInfoEntry {
                 label: label.to_string(),
                 did_hex: format!("{:04X}", did_id),
                 value: None,
                 error: Some(err_msg.to_string()),
+                category: category.to_string(),
             });
         }
     }
@@ -497,10 +541,10 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
 fn read_bcm_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::BCM_TX;
     vec![
-        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage, emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc, emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp, emulator),
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage, "battery", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc, "battery", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp, "battery", emulator),
     ]
 }
 
@@ -761,6 +805,8 @@ pub fn list_routines() -> Vec<RoutineInfo> {
 fn did_name(did_id: u16) -> &'static str {
     match did_id {
         0xF190 => "VIN",
+        0xF187 => "Assembly Part",
+        0xF191 => "Hardware Part",
         0xF188 => "Master RPM Part",
         0xF120 => "V850 Part",
         0xF121 => "Tuner Part",
@@ -804,7 +850,7 @@ fn send_uds_request<R: tauri::Runtime>(
         }
     }
 
-    let max_busy_retries: u32 = 3;
+    let max_busy_retries: u32 = 6;
 
     for busy_attempt in 0..=max_busy_retries {
         if busy_attempt > 0 {
@@ -954,19 +1000,23 @@ mod tests {
         assert_eq!(entries.len(), 4);
         // VIN
         assert_eq!(entries[0].label, "VIN");
+        assert_eq!(entries[0].category, "vehicle");
         assert!(entries[0].value.is_some(), "VIN should have emulated value");
         assert!(entries[0].error.is_none());
         assert!(entries[0].value.as_ref().unwrap().starts_with("SAJBA4BN"));
         // Battery Voltage
         assert_eq!(entries[1].label, "Battery Voltage");
+        assert_eq!(entries[1].category, "battery");
         assert!(entries[1].value.is_some());
         assert!(entries[1].value.as_ref().unwrap().contains("V"));
         // Battery SOC
         assert_eq!(entries[2].label, "Battery SOC");
+        assert_eq!(entries[2].category, "battery");
         assert!(entries[2].value.is_some());
         assert!(entries[2].value.as_ref().unwrap().contains("%"));
         // Battery Temp
         assert_eq!(entries[3].label, "Battery Temp");
+        assert_eq!(entries[3].category, "battery");
         assert!(entries[3].value.is_some());
         assert!(entries[3].value.as_ref().unwrap().contains("°C"));
     }
@@ -999,30 +1049,65 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → OK
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // Security Access seed → seed response
+        mock.expect_request(tx, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        // Security Access key (computed from seed 0x112233 with DC0314)
+        let seed_int = 0x112233u32;
+        let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
+        let key_bytes = [((key_int >> 16) & 0xFF) as u8, ((key_int >> 8) & 0xFF) as u8, (key_int & 0xFF) as u8];
+        let mut key_req = vec![0x27, 0x12];
+        key_req.extend_from_slice(&key_bytes);
+        mock.expect_request(tx, key_req, vec![0x67, 0x12]);
         // D100 Diag Session → Extended (0x03)
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
+        // TesterPresent keepalive before IMC Status
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // 0202 IMC Status → Normal (0x00)
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
+        // TesterPresent keepalive before VIN
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // F190 VIN
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A, 0x42, 0x41]);
-        // F188 Master RPM
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x46, 0x57, 0x39, 0x33]);
+        // TesterPresent keepalive before Assembly Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // F187 Assembly Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x87], vec![0x62, 0xF1, 0x87, 0x47, 0x58, 0x36, 0x33]);
+        // TesterPresent keepalive before Hardware Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // F191 Hardware Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x91], vec![0x62, 0xF1, 0x91, 0x48, 0x57, 0x30, 0x31]);
+        // TesterPresent keepalive before Software Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // F188 Software Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57, 0x30, 0x31]);
+        // TesterPresent keepalive before Bootloader
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // F180 Bootloader
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C, 0x30, 0x31]);
+        // TesterPresent keepalive before Polar Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // F1A5 Polar Part
         mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x4A, 0x50, 0x4C, 0x41]);
-        // F18C ECU Serial
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x30, 0x30, 0x31]);
-        // F113 ECU Serial 2
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x41, 0x42, 0x43]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 7); // D100 + 6 DIDs
+        assert_eq!(entries.len(), 8); // D100 + IMC Status + VIN + Assembly + Hardware + Software + Bootloader + Polar
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Extended"));
         assert_eq!(entries[1].label, "IMC Status");
         assert!(entries[1].value.as_ref().unwrap().contains("Normal"));
         assert_eq!(entries[2].label, "VIN");
         assert!(entries[2].value.is_some());
+        assert_eq!(entries[3].label, "Assembly Part");
+        assert!(entries[3].value.is_some());
+        assert_eq!(entries[4].label, "Hardware Part");
+        assert!(entries[4].value.is_some());
+        assert_eq!(entries[5].label, "Software Part");
+        assert!(entries[5].value.is_some());
+        assert_eq!(entries[6].label, "Bootloader");
+        assert!(entries[6].value.is_some());
+        assert_eq!(entries[7].label, "Polar Part");
+        assert!(entries[7].value.is_some());
         // All should have values, no errors
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value", entry.label);
@@ -1040,15 +1125,15 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → NRC 0x12 (SubFunctionNotSupported)
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        // D100 Diag Session → Default (0x01)
+        // D100 → Default
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 8); // D100 + 7 error entries
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Default"));
-        // DIDs 1-6 should have "enable bench mode" error
+        // DIDs 1-7 should have "enable bench mode" error
         for entry in &entries[1..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
@@ -1072,8 +1157,8 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 7);
-        // DIDs 1-6 should have the correct message (NOT "enable bench mode")
+        assert_eq!(entries.len(), 8); // D100 + 7 error entries
+        // DIDs 1-7 should have the correct message (NOT "enable bench mode")
         for entry in &entries[1..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             let err = entry.error.as_ref().unwrap();
@@ -1082,6 +1167,88 @@ mod tests {
             assert!(err.contains("CAN bus"),
                 "{}: should mention CAN bus. Got: {}", entry.label, err);
         }
+    }
+
+    #[test]
+    fn test_imc_security_access_fails_gracefully() {
+        // Security Access returns NRC 0x7F (serviceNotSupportedInActiveSession) — DIDs still read
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+
+        // TesterPresent → OK
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        // Extended Session → OK
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // Security seed → NRC 0x7F (serviceNotSupportedInActiveSession)
+        mock.expect_request(tx, vec![0x27, 0x11], vec![0x7F, 0x27, 0x7F]);
+        // D100 Diag Session → Extended (0x03)
+        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
+        // TesterPresent + IMC Status
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
+        // TesterPresent + VIN
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+        // TesterPresent + Assembly Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x87], vec![0x62, 0xF1, 0x87, 0x41, 0x53, 0x4D]);
+        // TesterPresent + Hardware Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x91], vec![0x62, 0xF1, 0x91, 0x48, 0x57]);
+        // TesterPresent + Software Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
+        // TesterPresent + Bootloader
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C]);
+        // TesterPresent + Polar Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
+
+        let entries = read_imc_info(&app, &mock, None);
+
+        assert_eq!(entries.len(), 8);
+        // All should still have values despite security failure
+        for entry in &entries {
+            assert!(entry.value.is_some(), "{} should have value even without security", entry.label);
+            assert!(entry.error.is_none(), "{} should not have error", entry.label);
+        }
+    }
+
+    // ─── NRC 0x21 retry tests ─────────────────────────────────────
+
+    #[test]
+    fn test_nrc_0x21_retry_succeeds_on_4th_attempt() {
+        // First 3 attempts return NRC 0x21 (busyRepeatRequest), 4th succeeds
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+
+        // 3x NRC 0x21, then success
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x21]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x21]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x21]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+
+        let result = send_uds_request(&app, &mock, tx, &[0x22, 0xF1, 0x90], false, None);
+        assert!(result.is_ok(), "Should succeed after 3 retries: {:?}", result);
+    }
+
+    #[test]
+    fn test_nrc_0x21_retry_exhausted() {
+        // All 7 attempts (1 + 6 retries) return NRC 0x21 → error
+        let app = test_app();
+        let mock = setup_mock_channel();
+        let tx = ecu_addr::IMC_TX;
+
+        for _ in 0..7 {
+            mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x21]);
+        }
+
+        let result = send_uds_request(&app, &mock, tx, &[0x22, 0xF1, 0x90], false, None);
+        assert!(result.is_err(), "Should fail after exhausting retries");
+        assert!(result.unwrap_err().contains("0x21"), "Error should mention NRC 0x21");
     }
 
     // ─── DID name and format tests ──────────────────────────────────

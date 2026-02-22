@@ -10,6 +10,7 @@ export interface EcuInfoEntry {
   did_hex: string;
   value: string | null;
   error: string | null;
+  category: string;
 }
 
 export interface RoutineInfo {

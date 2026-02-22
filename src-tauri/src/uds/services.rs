@@ -26,6 +26,8 @@ pub enum DiagSession {
 /// Known DID identifiers
 pub mod did {
     pub const VIN: u16 = 0xF190;
+    pub const ASSEMBLY_PART: u16 = 0xF187;   // Assembly/Spare Part Number
+    pub const HARDWARE_PART: u16 = 0xF191;   // ECU Hardware Number
     pub const MASTER_RPM_PART: u16 = 0xF188;
     pub const V850_PART: u16 = 0xF120;
     pub const TUNER_PART: u16 = 0xF121;
