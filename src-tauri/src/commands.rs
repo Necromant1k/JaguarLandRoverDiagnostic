@@ -745,13 +745,12 @@ fn send_uds_request(
         }
     }
 
-    // SDD EXML: MAX_BUSY_ATTEMPTS=6 for NRC 0x21 (busyRepeatRequest)
-    let max_busy_retries: u32 = 6;
+    let max_busy_retries: u32 = 3;
 
     for busy_attempt in 0..=max_busy_retries {
         if busy_attempt > 0 {
             emit_log_simple(app, LogDirection::Tx, &[], &format!("Busy retry {}/{}", busy_attempt, max_busy_retries));
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(300));
         }
 
         match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
@@ -777,11 +776,10 @@ fn send_uds_request_once(
     let msg = PassThruMsg::new_iso15765(tx_id, request);
     channel.send(&msg, 2000)?;
 
-    // SDD EXML: ENG_RX_TIMEOUT=35000ms, ENG_MAX_PENDING_PERIOD=60000ms
     let timeout = if wait_pending {
-        std::time::Duration::from_secs(60)
+        std::time::Duration::from_secs(30)
     } else {
-        std::time::Duration::from_secs(10)
+        std::time::Duration::from_secs(3)
     };
     let start = std::time::Instant::now();
 
