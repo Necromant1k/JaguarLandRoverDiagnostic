@@ -42,6 +42,10 @@ export async function runRoutine(
   return invoke<RoutineResponse>("run_routine", { routineId, data });
 }
 
+export async function readCcf(): Promise<EcuInfoEntry[]> {
+  return invoke<EcuInfoEntry[]>("read_ccf");
+}
+
 export async function readDid(
   ecuTx: number,
   didId: number

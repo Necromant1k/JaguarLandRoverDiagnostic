@@ -68,6 +68,7 @@ pub fn run() {
             commands::get_bench_mode_status,
             commands::read_ecu_info,
             commands::run_routine,
+            commands::read_ccf,
             commands::read_did,
             commands::list_routines,
             commands::export_logs,

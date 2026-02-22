@@ -450,18 +450,73 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     let mut entries = Vec::new();
     let bench_mode = emulator.is_some();
 
-    // Step 1: TesterPresent + try Extended Session
-    emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent (IMC)");
-    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-
-    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
-    let extended_ok = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator).is_ok();
-
-    if !extended_ok {
-        emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — reading default-session DIDs only");
+    // Step 1: In bench mode, poll TesterPresent until IMC is ready
+    if bench_mode {
+        emit_log_simple(app, LogDirection::Tx, &[], "Bench mode: waiting for IMC to boot...");
+        let mut imc_ready = false;
+        for attempt in 1..=15 {
+            emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], &format!("TesterPresent poll {}/15", attempt));
+            match send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator) {
+                Ok(_) => {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("IMC responded on attempt {}", attempt));
+                    imc_ready = true;
+                    break;
+                }
+                Err(_) => {
+                    if attempt < 15 {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+                }
+            }
+        }
+        if !imc_ready {
+            emit_log_simple(app, LogDirection::Rx, &[], "IMC not responding after 15 attempts");
+            return vec![EcuInfoEntry {
+                label: "IMC Status".to_string(),
+                did_hex: "0202".to_string(),
+                value: None,
+                error: Some("IMC not responding — check power and CAN connection".to_string()),
+                category: "status".to_string(),
+            }];
+        }
+    } else {
+        emit_log_simple(app, LogDirection::Tx, &[0x3E, 0x00], "TesterPresent (IMC)");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
     }
 
-    // Step 2: Try Security Access (needed for VIN, software parts)
+    // Step 2: Try Extended Session with retries in bench mode
+    let mut extended_ok = false;
+    if bench_mode {
+        for attempt in 1..=5 {
+            // Send TesterPresent before each attempt to keep session alive
+            if attempt > 1 {
+                let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+            }
+            emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], &format!("ExtendedSession attempt {}/5", attempt));
+            match send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator) {
+                Ok(_) => {
+                    emit_log_simple(app, LogDirection::Rx, &[], "Extended Session OK");
+                    extended_ok = true;
+                    break;
+                }
+                Err(e) => {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("Extended Session failed: {} (attempt {}/5)", e, attempt));
+                    if attempt < 5 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                }
+            }
+        }
+    } else {
+        emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
+        extended_ok = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator).is_ok();
+    }
+
+    if !extended_ok {
+        emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — trying default-session DIDs");
+    }
+
+    // Step 3: Try Security Access (needed for VIN, software parts)
     if extended_ok {
         emit_log_simple(app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed (IMC)");
         match send_uds_request(app, channel, tx, &[0x27, 0x11], false, emulator) {
@@ -486,7 +541,7 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         }
     }
 
-    // Step 3: Read DIDs
+    // Step 4: Read DIDs
     entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status", emulator));
 
     if extended_ok {
@@ -517,6 +572,15 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
         entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware", emulator));
     } else {
+        // Default session fallback: try VIN and ECU Serial anyway
+        emit_log_simple(app, LogDirection::Tx, &[], "Trying default-session DIDs (VIN, ECU Serial)...");
+
+        // Try VIN in default session
+        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
+        // Try ECU Serial in default session
+        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator));
+
+        // Rest require Extended Session — show clear error
         let err_msg = if bench_mode {
             "Extended Session failed — IMC needs other ECUs on CAN bus"
         } else {
@@ -524,13 +588,11 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         };
         for (did_id, label, category) in [
             (did::IMC_STATUS, "IMC Status", "status"),
-            (did::VIN, "VIN", "vehicle"),
             (did::MASTER_RPM_PART, "Software Part", "software"),
             (did::PBL_PART, "Bootloader", "software"),
             (did::V850_PART, "V850 Part", "software"),
             (did::TUNER_PART, "Tuner Part", "software"),
             (did::POLAR_PART, "Polar Part", "software"),
-            (did::ECU_SERIAL, "ECU Serial", "hardware"),
             (did::ECU_SERIAL2, "ECU Serial 2", "hardware"),
         ] {
             entries.push(EcuInfoEntry {
@@ -675,6 +737,162 @@ fn run_routine_inner(
     })
 }
 
+/// Read CCF (Central Configuration File) from IMC via Report CCF routine (0x0E01)
+#[tauri::command]
+pub fn read_ccf(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<EcuInfoEntry>, String> {
+    read_ccf_inner(&app, &state).map_err(|e| log_err("read_ccf", e))
+}
+
+fn read_ccf_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<Vec<EcuInfoEntry>, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
+    let emulator = conn.emulator_manager.as_ref();
+
+    // SDD prerequisite flow (no security needed for CCF)
+    sdd_prerequisite_flow(app, channel, false, emulator)?;
+
+    // Run Report CCF routine (0x0E01) with wait_pending=true
+    let request = vec![0x31, 0x01, 0x0E, 0x01];
+    emit_log_simple(app, LogDirection::Tx, &request, "RoutineControl Report CCF (0x0E01)");
+    let resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &request, true, emulator)
+        .map_err(|e| format!("Report CCF failed: {}", e))?;
+
+    // Response: 71 01 0E 01 [CCF data...]
+    let ccf_data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
+
+    emit_log_simple(app, LogDirection::Rx, &[], &format!(
+        "CCF data: {} bytes",
+        ccf_data.len()
+    ));
+
+    Ok(parse_ccf_entries(ccf_data))
+}
+
+/// Parse CCF response data into structured entries
+fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
+    let mut entries = Vec::new();
+
+    if data.is_empty() {
+        entries.push(EcuInfoEntry {
+            label: "CCF Status".to_string(),
+            did_hex: "0E01".to_string(),
+            value: Some("No configuration data".to_string()),
+            error: None,
+            category: "config".to_string(),
+        });
+        return entries;
+    }
+
+    // Raw CCF hex dump — always include for debugging
+    let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+    entries.push(EcuInfoEntry {
+        label: "CCF Raw Data".to_string(),
+        did_hex: "0E01".to_string(),
+        value: Some(hex_str),
+        error: None,
+        category: "config".to_string(),
+    });
+
+    entries.push(EcuInfoEntry {
+        label: "CCF Length".to_string(),
+        did_hex: "0E01".to_string(),
+        value: Some(format!("{} bytes", data.len())),
+        error: None,
+        category: "config".to_string(),
+    });
+
+    // Parse known CCF fields if enough data
+    if !data.is_empty() {
+        entries.push(EcuInfoEntry {
+            label: "CCF Status Byte".to_string(),
+            did_hex: "0E01".to_string(),
+            value: Some(format!("0x{:02X}", data[0])),
+            error: None,
+            category: "config".to_string(),
+        });
+    }
+
+    if data.len() >= 2 {
+        let market = match data[1] {
+            0x01 => "Europe (EU)",
+            0x02 => "North America (NA)",
+            0x03 => "China (CN)",
+            0x04 => "Middle East (ME)",
+            0x05 => "Asia Pacific (AP)",
+            0x06 => "Japan (JP)",
+            0x07 => "Korea (KR)",
+            _ => "Unknown",
+        };
+        entries.push(EcuInfoEntry {
+            label: "Market/Region".to_string(),
+            did_hex: "0E01".to_string(),
+            value: Some(format!("{} (0x{:02X})", market, data[1])),
+            error: None,
+            category: "config".to_string(),
+        });
+    }
+
+    if data.len() >= 3 {
+        let lang = match data[2] {
+            0x01 => "English",
+            0x02 => "French",
+            0x03 => "German",
+            0x04 => "Spanish",
+            0x05 => "Italian",
+            0x06 => "Portuguese",
+            0x07 => "Dutch",
+            0x08 => "Russian",
+            0x09 => "Chinese",
+            0x0A => "Japanese",
+            0x0B => "Korean",
+            0x0C => "Arabic",
+            _ => "Unknown",
+        };
+        entries.push(EcuInfoEntry {
+            label: "Language".to_string(),
+            did_hex: "0E01".to_string(),
+            value: Some(format!("{} (0x{:02X})", lang, data[2])),
+            error: None,
+            category: "config".to_string(),
+        });
+    }
+
+    // Feature flags byte (if present)
+    if data.len() >= 4 {
+        let features = data[3];
+        let mut feature_list = Vec::new();
+        if features & 0x01 != 0 { feature_list.push("Navigation"); }
+        if features & 0x02 != 0 { feature_list.push("DAB Radio"); }
+        if features & 0x04 != 0 { feature_list.push("DVD"); }
+        if features & 0x08 != 0 { feature_list.push("Bluetooth"); }
+        if features & 0x10 != 0 { feature_list.push("WiFi"); }
+        if features & 0x20 != 0 { feature_list.push("USB Media"); }
+        if features & 0x40 != 0 { feature_list.push("Rear Camera"); }
+        if features & 0x80 != 0 { feature_list.push("Surround Camera"); }
+        let value = if feature_list.is_empty() {
+            format!("None (0x{:02X})", features)
+        } else {
+            format!("{} (0x{:02X})", feature_list.join(", "), features)
+        };
+        entries.push(EcuInfoEntry {
+            label: "Features".to_string(),
+            did_hex: "0E01".to_string(),
+            value: Some(value),
+            error: None,
+            category: "config".to_string(),
+        });
+    }
+
+    entries
+}
+
 /// Read a single DID
 #[tauri::command]
 pub fn read_did(
@@ -814,12 +1032,6 @@ fn did_name(did_id: u16) -> &'static str {
     match did_id {
         0xF190 => "VIN",
         0xF188 => "Master RPM Part",
-        0xF120 => "V850 Part",
-        0xF121 => "Tuner Part",
-        0xF1A5 => "Polar Part",
-        0xF180 => "PBL Part",
-        0xF18C => "ECU Serial",
-        0xF113 => "ECU Serial 2",
         0xD100 => "Diag Session",
         0x0202 => "IMC Status",
         0x402A => "Battery Voltage",
@@ -1124,7 +1336,8 @@ mod tests {
 
     #[test]
     fn test_imc_read_extended_session_fails_no_bench() {
-        // Extended Session fails, bench mode OFF → shows "enable bench mode" message
+        // Extended Session fails, bench mode OFF → fallback reads VIN + ECU Serial,
+        // rest show "enable bench mode" message
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
@@ -1134,14 +1347,22 @@ mod tests {
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
         // D100 → Default
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
+        // Default session fallback: VIN + ECU Serial
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 10); // D100 + 9 error entries
+        assert_eq!(entries.len(), 10); // D100 + VIN + ECU Serial + 7 error entries
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Default"));
-        // DIDs 1-9 should have "enable bench mode" error
-        for entry in &entries[1..] {
+        // VIN and ECU Serial should have values from fallback
+        assert_eq!(entries[1].label, "VIN");
+        assert!(entries[1].value.is_some(), "VIN should read in default session");
+        assert_eq!(entries[2].label, "ECU Serial");
+        assert!(entries[2].value.is_some(), "ECU Serial should read in default session");
+        // Remaining DIDs should have "enable bench mode" error
+        for entry in &entries[3..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
                 "{}: wrong error message: {:?}", entry.label, entry.error);
@@ -1150,23 +1371,46 @@ mod tests {
 
     #[test]
     fn test_imc_read_extended_session_fails_with_bench() {
-        // Extended Session fails, bench mode IS ON → should NOT say "enable bench mode"
+        // Extended Session fails after retries, bench mode IS ON → fallback reads VIN + ECU Serial,
+        // rest should NOT say "enable bench mode"
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
         let emu = EcuEmulatorManager::new(vec![EcuId::Bcm]);
 
+        // Bench mode: TesterPresent poll (succeeds on first try)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // Extended Session → NRC 0x12
+        // Extended Session retries: 5 attempts, all fail
+        // Attempt 1: Extended Session → NRC 0x12
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // Attempt 2: TesterPresent + Extended Session
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // Attempt 3: TesterPresent + Extended Session
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // Attempt 4: TesterPresent + Extended Session
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // Attempt 5: TesterPresent + Extended Session
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
         // D100 → Default
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
+        // Default session fallback: VIN + ECU Serial
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 10); // D100 + 9 error entries
-        // DIDs 1-9 should have the correct message (NOT "enable bench mode")
-        for entry in &entries[1..] {
+        assert_eq!(entries.len(), 10); // D100 + VIN + ECU Serial + 7 error entries
+        // VIN and ECU Serial should have values from fallback
+        assert_eq!(entries[1].label, "VIN");
+        assert!(entries[1].value.is_some(), "VIN should read in default session");
+        assert_eq!(entries[2].label, "ECU Serial");
+        assert!(entries[2].value.is_some(), "ECU Serial should read in default session");
+        // Remaining DIDs should have the correct message (NOT "enable bench mode")
+        for entry in &entries[3..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             let err = entry.error.as_ref().unwrap();
             assert!(!err.contains("enable bench mode"),
