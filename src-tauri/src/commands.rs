@@ -737,7 +737,8 @@ fn run_routine_inner(
     })
 }
 
-/// Read CCF (Central Configuration File) from IMC via Report CCF routine (0x0E01)
+/// Read CCF (Central Configuration File) from IMC
+/// Flow: Retrieve CCF (0x0E00) to download from network, then List CCF (0x0E02) to read stored data
 #[tauri::command]
 pub fn read_ccf(
     app: AppHandle,
@@ -758,19 +759,42 @@ fn read_ccf_inner(
     // SDD prerequisite flow (no security needed for CCF)
     sdd_prerequisite_flow(app, channel, false, emulator)?;
 
-    // Run Report CCF routine (0x0E01) with wait_pending=true
-    let request = vec![0x31, 0x01, 0x0E, 0x01];
-    emit_log_simple(app, LogDirection::Tx, &request, "RoutineControl Report CCF (0x0E01)");
-    let resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &request, true, emulator)
-        .map_err(|e| format!("Report CCF failed: {}", e))?;
+    // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
+    let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
+    emit_log_simple(app, LogDirection::Tx, &retrieve_req, "RoutineControl Retrieve CCF (0x0E00)");
+    match send_uds_request(app, channel, ecu_addr::IMC_TX, &retrieve_req, true, emulator) {
+        Ok(resp) => {
+            let data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF OK: {} bytes", data.len()));
+            if !data.is_empty() {
+                return Ok(parse_ccf_entries(data));
+            }
+            // If Retrieve returned no data, try Request Results
+            let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
+            let results_req = vec![0x31, 0x03, 0x0E, 0x00];
+            emit_log_simple(app, LogDirection::Tx, &results_req, "RoutineControl Request Results CCF (0x0E00)");
+            if let Ok(results_resp) = send_uds_request(app, channel, ecu_addr::IMC_TX, &results_req, true, emulator) {
+                let results_data = if results_resp.len() > 4 { &results_resp[4..] } else { &[] as &[u8] };
+                if !results_data.is_empty() {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("CCF Results: {} bytes", results_data.len()));
+                    return Ok(parse_ccf_entries(results_data));
+                }
+            }
+        }
+        Err(e) => {
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF failed: {} — trying List", e));
+        }
+    }
 
-    // Response: 71 01 0E 01 [CCF data...]
+    // Step 2: Fallback — List CCF (0x0E02) to read what's stored
+    let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
+    let list_req = vec![0x31, 0x01, 0x0E, 0x02];
+    emit_log_simple(app, LogDirection::Tx, &list_req, "RoutineControl List CCF (0x0E02)");
+    let resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &list_req, true, emulator)
+        .map_err(|e| format!("List CCF failed: {}", e))?;
+
     let ccf_data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
-
-    emit_log_simple(app, LogDirection::Rx, &[], &format!(
-        "CCF data: {} bytes",
-        ccf_data.len()
-    ));
+    emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF: {} bytes", ccf_data.len()));
 
     Ok(parse_ccf_entries(ccf_data))
 }
@@ -782,7 +806,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
     if data.is_empty() {
         entries.push(EcuInfoEntry {
             label: "CCF Status".to_string(),
-            did_hex: "0E01".to_string(),
+            did_hex: "CCF".to_string(),
             value: Some("No configuration data".to_string()),
             error: None,
             category: "config".to_string(),
@@ -794,7 +818,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
     let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
     entries.push(EcuInfoEntry {
         label: "CCF Raw Data".to_string(),
-        did_hex: "0E01".to_string(),
+        did_hex: "CCF".to_string(),
         value: Some(hex_str),
         error: None,
         category: "config".to_string(),
@@ -802,7 +826,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
 
     entries.push(EcuInfoEntry {
         label: "CCF Length".to_string(),
-        did_hex: "0E01".to_string(),
+        did_hex: "CCF".to_string(),
         value: Some(format!("{} bytes", data.len())),
         error: None,
         category: "config".to_string(),
@@ -812,7 +836,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
     if !data.is_empty() {
         entries.push(EcuInfoEntry {
             label: "CCF Status Byte".to_string(),
-            did_hex: "0E01".to_string(),
+            did_hex: "CCF".to_string(),
             value: Some(format!("0x{:02X}", data[0])),
             error: None,
             category: "config".to_string(),
@@ -832,7 +856,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
         };
         entries.push(EcuInfoEntry {
             label: "Market/Region".to_string(),
-            did_hex: "0E01".to_string(),
+            did_hex: "CCF".to_string(),
             value: Some(format!("{} (0x{:02X})", market, data[1])),
             error: None,
             category: "config".to_string(),
@@ -857,7 +881,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
         };
         entries.push(EcuInfoEntry {
             label: "Language".to_string(),
-            did_hex: "0E01".to_string(),
+            did_hex: "CCF".to_string(),
             value: Some(format!("{} (0x{:02X})", lang, data[2])),
             error: None,
             category: "config".to_string(),
@@ -883,7 +907,7 @@ fn parse_ccf_entries(data: &[u8]) -> Vec<EcuInfoEntry> {
         };
         entries.push(EcuInfoEntry {
             label: "Features".to_string(),
-            did_hex: "0E01".to_string(),
+            did_hex: "CCF".to_string(),
             value: Some(value),
             error: None,
             category: "config".to_string(),
