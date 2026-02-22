@@ -254,7 +254,6 @@ impl EcuEmulatorManager {
     }
 
     /// Create software-routing-only emulator (no CAN broadcast).
-    #[allow(dead_code)]
     pub fn new(ecus: Vec<EcuId>) -> Self {
         Self {
             running: Arc::new(AtomicBool::new(false)),

@@ -10,6 +10,12 @@ use crate::state::{AppState, Connection};
 use crate::uds::client::{LogDirection, LogEntry};
 use crate::uds::services::{did, ecu_addr, routine};
 
+/// Log an error and return it — ensures all command errors are visible in the log file
+fn log_err(context: &str, msg: String) -> String {
+    log::error!("[{}] {}", context, msg);
+    msg
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub firmware_version: String,
@@ -264,24 +270,38 @@ pub fn toggle_bench_mode(
 
         let ecu_names: Vec<String> = ecu_ids.iter().map(|e| e.name().to_string()).collect();
 
-        // Open a raw CAN channel for broadcast (separate from the ISO15765 channel)
-        let can_channel = conn.device.connect_can(500000)?;
-        let can_channel_id = can_channel.channel_id();
-
-        // Software routing + CAN broadcast to simulate ECU presence on the bus
-        let manager = crate::ecu_emulator::EcuEmulatorManager::new_with_broadcast(
-            &conn.lib,
-            can_channel_id,
-            ecu_ids,
-        );
-        conn.can_channel = Some(can_channel);
+        // Try to open a raw CAN channel for broadcast (separate from ISO15765)
+        // Some J2534 devices (e.g. MongoosePro) only support one channel at a time,
+        // so broadcast is optional — software routing still works without it.
+        let manager = match conn.device.connect_can(500000) {
+            Ok(can_channel) => {
+                let can_channel_id = can_channel.channel_id();
+                let mgr = crate::ecu_emulator::EcuEmulatorManager::new_with_broadcast(
+                    &conn.lib,
+                    can_channel_id,
+                    ecu_ids,
+                );
+                conn.can_channel = Some(can_channel);
+                emit_log_simple(
+                    &app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("Bench mode ON — emulating: {} (CAN broadcast active)", ecu_names.join(", ")),
+                );
+                mgr
+            }
+            Err(e) => {
+                log::warn!("CAN broadcast channel unavailable: {} — using software routing only", e);
+                emit_log_simple(
+                    &app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("Bench mode ON — emulating: {} (software routing only, no CAN broadcast)", ecu_names.join(", ")),
+                );
+                crate::ecu_emulator::EcuEmulatorManager::new(ecu_ids)
+            }
+        };
         conn.emulator_manager = Some(manager);
-        emit_log_simple(
-            &app,
-            LogDirection::Rx,
-            &[],
-            &format!("Bench mode ON — emulating: {} (CAN broadcast active)", ecu_names.join(", ")),
-        );
     } else {
         // Cleanup already done above
         emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — emulation stopped");
@@ -311,14 +331,18 @@ pub fn get_bench_mode_status(state: State<'_, AppState>) -> Result<BenchModeStat
 /// Read ECU info — returns a list of DID entries for the given ECU
 #[tauri::command]
 pub fn read_ecu_info(app: AppHandle, state: State<'_, AppState>, ecu: String) -> Result<Vec<EcuInfoEntry>, String> {
+    read_ecu_info_inner(&app, &state, &ecu).map_err(|e| log_err("read_ecu_info", e))
+}
+
+fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) -> Result<Vec<EcuInfoEntry>, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
     let emulator = conn.emulator_manager.as_ref();
-    let entries = match ecu.as_str() {
-        "imc" => read_imc_info(&app, channel, emulator),
-        "bcm" => read_bcm_info(&app, channel, emulator),
+    let entries = match ecu {
+        "imc" => read_imc_info(app, channel, emulator),
+        "bcm" => read_bcm_info(app, channel, emulator),
         _ => return Err(format!("Unknown ECU: {}", ecu)),
     };
 
@@ -536,6 +560,15 @@ pub fn run_routine(
     routine_id: u16,
     data: Vec<u8>,
 ) -> Result<RoutineResponse, String> {
+    run_routine_inner(&app, &state, routine_id, &data).map_err(|e| log_err("run_routine", e))
+}
+
+fn run_routine_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    routine_id: u16,
+    data: &[u8],
+) -> Result<RoutineResponse, String> {
     let conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
@@ -548,13 +581,13 @@ pub fn run_routine(
     let emulator = conn.emulator_manager.as_ref();
 
     // Run SDD prerequisite flow (TesterPresent + Extended Session + optional Security)
-    sdd_prerequisite_flow(&app, channel, needs_security, emulator)?;
+    sdd_prerequisite_flow(app, channel, needs_security, emulator)?;
 
     // Send RoutineControl Start
     let mut request = vec![0x31, 0x01, (routine_id >> 8) as u8, (routine_id & 0xFF) as u8];
-    request.extend_from_slice(&data);
+    request.extend_from_slice(data);
 
-    let resp = send_uds_request(&app, channel, ecu_addr::IMC_TX, &request, needs_pending, emulator)
+    let resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &request, needs_pending, emulator)
         .map_err(|e| format!("Routine 0x{:04X} failed: {}", routine_id, e))?;
 
     let raw_data = if resp.len() > 4 {
@@ -597,7 +630,8 @@ pub fn read_did(
     let conn = conn.as_ref().ok_or("Not connected")?;
     let channel = conn.channel.as_ref().ok_or("No channel available")?;
 
-    let data = send_read_did(&app, channel, ecu_tx, did_id, conn.emulator_manager.as_ref())?;
+    let data = send_read_did(&app, channel, ecu_tx, did_id, conn.emulator_manager.as_ref())
+        .map_err(|e| log_err("read_did", e))?;
     Ok(data)
 }
 
@@ -770,7 +804,6 @@ fn send_uds_request(
     for busy_attempt in 0..=max_busy_retries {
         if busy_attempt > 0 {
             emit_log_simple(app, LogDirection::Tx, &[], &format!("Busy retry {}/{}", busy_attempt, max_busy_retries));
-            std::thread::sleep(std::time::Duration::from_millis(300));
         }
 
         match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
