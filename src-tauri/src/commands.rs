@@ -1094,6 +1094,7 @@ fn send_uds_request<R: tauri::Runtime>(
         match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
             Ok(resp) => return Ok(resp),
             Err(e) if e.contains("0x21") && busy_attempt < max_busy_retries => {
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 continue;
             }
             Err(e) => return Err(e),
@@ -1115,9 +1116,9 @@ fn send_uds_request_once<R: tauri::Runtime>(
     channel.send(&msg, 2000)?;
 
     let timeout = if wait_pending {
-        std::time::Duration::from_secs(30)
+        std::time::Duration::from_secs(60)
     } else {
-        std::time::Duration::from_secs(3)
+        std::time::Duration::from_secs(5)
     };
     let start = std::time::Instant::now();
 

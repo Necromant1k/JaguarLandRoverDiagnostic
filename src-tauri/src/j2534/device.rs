@@ -66,7 +66,7 @@ impl J2534Device {
             (self.lib.pass_thru_connect)(
                 self.device_id,
                 PROTOCOL_ISO15765,
-                0, // flags
+                ISO15765_FRAME_PAD, // pad all frames to 8 bytes (EXML property 215=1)
                 baudrate,
                 &mut channel_id,
             )
@@ -153,6 +153,7 @@ impl J2534Channel {
 
         let mut flow_control = PassThruMsg::default();
         flow_control.protocol_id = PROTOCOL_ISO15765;
+        flow_control.tx_flags = ISO15765_FRAME_PAD; // pad FC to 8 bytes — IMC requires it
         flow_control.data_size = 4;
         flow_control.data[0..4].copy_from_slice(&tx_id.to_be_bytes());
 
