@@ -225,6 +225,34 @@ impl J2534Channel {
         Ok(msgs)
     }
 
+    /// Set ISO15765 flow control parameters via IOCTL SET_CONFIG
+    pub fn set_iso15765_config(&self, bs: u32, stmin: u32, wft_max: u32) -> Result<(), String> {
+        let mut configs = [
+            SConfig { parameter: ISO15765_BS, value: bs },
+            SConfig { parameter: ISO15765_STMIN, value: stmin },
+            SConfig { parameter: ISO15765_WFT_MAX, value: wft_max },
+        ];
+        let config_list = SConfigList {
+            num_of_params: 3,
+            config_ptr: configs.as_mut_ptr(),
+        };
+        let ret = unsafe {
+            (self.lib.pass_thru_ioctl)(
+                self.channel_id,
+                SET_CONFIG,
+                &config_list as *const SConfigList as *const c_void,
+                std::ptr::null_mut(),
+            )
+        };
+        if ret != 0 {
+            return Err(format!(
+                "PassThruIoctl SET_CONFIG failed: {}",
+                J2534Error::from_code(ret)
+            ));
+        }
+        Ok(())
+    }
+
     /// Clear receive buffer
     pub fn clear_rx_buffer(&self) -> Result<(), String> {
         let ret = unsafe {

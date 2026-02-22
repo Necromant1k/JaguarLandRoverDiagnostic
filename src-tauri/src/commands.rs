@@ -180,6 +180,12 @@ pub fn connect(
     // Connect ISO15765 channel at 500kbps
     let channel = device.connect_iso15765(500000)?;
 
+    // Configure ISO15765 flow control parameters for multi-frame support
+    // BS=0 (send all frames without waiting), STMIN=0 (no delay between frames), WFT_MAX=0 (no wait frame limit)
+    if let Err(e) = channel.set_iso15765_config(0, 0, 0) {
+        emit_log_simple(&app, LogDirection::Rx, &[], &format!("Warning: SET_CONFIG ISO15765 failed: {}", e));
+    }
+
     // Setup flow control filter for IMC
     channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX)?;
 
