@@ -750,9 +750,8 @@ fn send_uds_request(
 
     for busy_attempt in 0..=max_busy_retries {
         if busy_attempt > 0 {
-            // Wait 1s before retry (SDD MAX_RETRY_PERIOD=6000ms / 6 attempts)
             emit_log_simple(app, LogDirection::Tx, &[], &format!("Busy retry {}/{}", busy_attempt, max_busy_retries));
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
         match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
