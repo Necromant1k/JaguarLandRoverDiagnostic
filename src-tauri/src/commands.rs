@@ -342,10 +342,16 @@ pub fn read_ecu_info(app: AppHandle, state: State<'_, AppState>, ecu: String) ->
 }
 
 fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) -> Result<Vec<EcuInfoEntry>, String> {
-    let conn = state.connection.lock().map_err(|e| e.to_string())?;
-    let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
+    let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_mut().ok_or("Not connected")?;
 
+    // In bench mode, do CAN pre-broadcast before IMC reads to wake IMC
+    // MongoosePro only supports one channel, so broadcast must happen before ISO15765
+    if ecu == "imc" && conn.emulator_manager.is_some() {
+        can_pre_broadcast(app, conn)?;
+    }
+
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
     let emulator = conn.emulator_manager.as_ref();
     let entries = match ecu {
         "imc" => read_imc_info(app, channel, emulator),
@@ -354,6 +360,51 @@ fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) 
     };
 
     Ok(entries)
+}
+
+/// CAN pre-broadcast: temporarily swap ISO15765 channel for raw CAN,
+/// broadcast NM messages to wake the IMC, then restore ISO15765.
+/// MongoosePro only supports one J2534 channel at a time, so we must
+/// close ISO15765 first, broadcast on CAN, then reopen ISO15765.
+fn can_pre_broadcast(app: &AppHandle, conn: &mut Connection) -> Result<(), String> {
+    emit_log_simple(app, LogDirection::Tx, &[], "Bench: CAN pre-broadcast to wake IMC...");
+
+    // Close ISO15765 channel to free the single J2534 channel slot
+    conn.channel.take(); // Drop triggers PassThruDisconnect
+
+    // Open raw CAN channel and broadcast NM messages for 5 seconds
+    match conn.device.connect_can(500000) {
+        Ok(can_ch) => {
+            for cycle in 0..50 { // 50 × 100ms = 5 seconds
+                for &(can_id, ref data) in crate::ecu_emulator::BROADCAST_MSGS {
+                    let _ = can_ch.send_raw_can(can_id, data);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if cycle % 10 == 9 {
+                    emit_log_simple(app, LogDirection::Tx, &[],
+                        &format!("CAN broadcast: {}s / 5s", (cycle + 1) / 10));
+                }
+            }
+            drop(can_ch); // Close CAN channel to free for ISO15765
+        }
+        Err(e) => {
+            emit_log_simple(app, LogDirection::Rx, &[],
+                &format!("Warning: CAN broadcast failed: {}", e));
+        }
+    }
+
+    // Re-open ISO15765 channel with all ECU filters
+    let channel = conn.device.connect_iso15765(500000)
+        .map_err(|e| format!("Failed to reopen ISO15765 after broadcast: {}", e))?;
+    let _ = channel.set_iso15765_config(0, 0, 0);
+    channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX)?;
+    channel.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX)?;
+    channel.setup_iso15765_filter(ecu_addr::GWM_TX, ecu_addr::GWM_RX)?;
+    channel.setup_iso15765_filter(ecu_addr::IPC_TX, ecu_addr::IPC_RX)?;
+    conn.channel = Some(channel);
+
+    emit_log_simple(app, LogDirection::Rx, &[], "CAN broadcast done, ISO15765 restored");
+    Ok(())
 }
 
 fn read_did_entry<R: tauri::Runtime>(
@@ -456,7 +507,8 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     let mut entries = Vec::new();
     let bench_mode = emulator.is_some();
 
-    // Step 1: In bench mode, poll TesterPresent until IMC is ready
+    // Step 1: TesterPresent — verify ECU is responsive
+    // In bench mode, poll until IMC responds (CAN pre-broadcast should have woken it)
     if bench_mode {
         emit_log_simple(app, LogDirection::Tx, &[], "Bench mode: waiting for IMC to boot...");
         let mut imc_ready = false;
@@ -490,99 +542,39 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
     }
 
-    // Read DIDs that work in Default Session (before Extended Session change)
-    entries.push(read_did_entry(app, channel, tx, did::ECU_INTERNAL_NUMBER, "Firmware Part", format_string, "software", emulator));
+    // Step 2: Read D100 (works in Default + Extended Session per EXML)
     entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status", emulator));
-    entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, "status", emulator));
 
-    // Step 2: Try Extended Session with retries in bench mode
-    let mut extended_ok = false;
-    if bench_mode {
-        for attempt in 1..=5 {
-            // Send TesterPresent before each attempt to keep session alive
-            if attempt > 1 {
-                let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-            }
-            emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], &format!("ExtendedSession attempt {}/5", attempt));
-            match send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator) {
-                Ok(_) => {
-                    emit_log_simple(app, LogDirection::Rx, &[], "Extended Session OK");
-                    extended_ok = true;
-                    break;
-                }
-                Err(e) => {
-                    emit_log_simple(app, LogDirection::Rx, &[], &format!("Extended Session failed: {} (attempt {}/5)", e, attempt));
-                    if attempt < 5 {
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                    }
-                }
-            }
-        }
-    } else {
-        emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
-        extended_ok = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator).is_ok();
-    }
+    // Step 3: Read DIDs with no session restriction (per EXML — work in any session)
+    // F111 is NOT defined for IMC in EXML — removed
+    let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
+        (did::VIN, "VIN", format_string, "vehicle"),
+        (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
+        (did::V850_PART, "V850 Part", format_string, "software"),
+        (did::POLAR_PART, "Polar Part", format_string, "software"),
+        (did::ECU_SERIAL, "ECU Serial", format_string, "hardware"),
+        (did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware"),
+    ];
 
-    if !extended_ok {
-        emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — trying default-session DIDs");
-    }
-
-    // Step 3: Read DIDs (no Security Access needed per EXML — SA only for routines)
-
-    // Helper: re-establish session after a DID failure (timeout burns session timer)
-    let refresh_session = |app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel| {
+    for (did_id, label, formatter, category) in &dids {
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
-    };
+        entries.push(read_did_entry(app, channel, tx, *did_id, label, *formatter, category, emulator));
+    }
 
-    if extended_ok {
-        // DIDs that need Extended Session
-        let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
-            (did::VIN, "VIN", format_string, "vehicle"),
-            (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
-            (did::V850_PART, "V850 Part", format_string, "software"),
-            (did::POLAR_PART, "Polar Part", format_string, "software"),
-            (did::ECU_SERIAL, "ECU Serial", format_string, "hardware"),
-            (did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware"),
-        ];
-
-        let mut last_failed = false;
-        for (did_id, label, formatter, category) in &dids {
-            if last_failed {
-                // Re-establish extended session after a failed read (timeout burns S3 timer)
-                refresh_session(app, channel);
-            } else {
-                let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-            }
-            let entry = read_did_entry(app, channel, tx, *did_id, label, *formatter, category, emulator);
-            last_failed = entry.error.is_some();
-            entries.push(entry);
-        }
+    // Step 4: Extended Session for DID 0x0202 (requires Extended per EXML)
+    emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "ExtendedSession (IMC)");
+    if send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator).is_ok() {
+        emit_log_simple(app, LogDirection::Rx, &[], "Extended Session OK");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, "status", emulator));
     } else {
-        // Default session fallback: try VIN and ECU Serial anyway
-        emit_log_simple(app, LogDirection::Tx, &[], "Trying default-session DIDs (VIN, ECU Serial)...");
-        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
-        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator));
-
-        let err_msg = if bench_mode {
-            "Extended Session failed — IMC needs other ECUs on CAN bus"
-        } else {
-            "Requires Extended Session (enable bench mode)"
-        };
-        for (did_id, label, category) in [
-            (did::MASTER_RPM_PART, "Software Part", "software"),
-            (did::V850_PART, "V850 Part", "software"),
-            (did::POLAR_PART, "Polar Part", "software"),
-            (did::ECU_SERIAL2, "ECU Serial 2", "hardware"),
-        ] {
-            entries.push(EcuInfoEntry {
-                label: label.to_string(),
-                did_hex: format!("{:04X}", did_id),
-                value: None,
-                error: Some(err_msg.to_string()),
-                category: category.to_string(),
-            });
-        }
+        entries.push(EcuInfoEntry {
+            label: "IMC Status".to_string(),
+            did_hex: "0202".to_string(),
+            value: None,
+            error: Some("Extended Session required for 0x0202".to_string()),
+            category: "status".to_string(),
+        });
     }
 
     entries
@@ -1292,19 +1284,15 @@ mod tests {
     #[test]
     fn test_imc_read_extended_session_ok() {
         // IMC with Extended Session succeeding — should read all DIDs
-        // No Security Access (EXML shows DIDs don't need it)
+        // Flow: TesterPresent → D100 → (TesterPresent+DID)×6 → ExtendedSession → TesterPresent+0202
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
 
         // TesterPresent → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // Default session DIDs (before Extended Session)
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57, 0x39, 0x33]);
+        // D100 (Default Session, no TesterPresent before first DID)
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
-        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // Extended Session → OK
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
         // TesterPresent + F190 VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A]);
@@ -1323,19 +1311,23 @@ mod tests {
         // TesterPresent + F113 ECU Serial 2
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
+        // Extended Session → OK
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // TesterPresent + 0202 IMC Status
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].label, "Firmware Part");
-        assert_eq!(entries[1].label, "Diag Session");
-        assert_eq!(entries[2].label, "IMC Status");
-        assert_eq!(entries[3].label, "VIN");
-        assert_eq!(entries[4].label, "Software Part");
-        assert_eq!(entries[5].label, "V850 Part");
-        assert_eq!(entries[6].label, "Polar Part");
-        assert_eq!(entries[7].label, "ECU Serial");
-        assert_eq!(entries[8].label, "ECU Serial 2");
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].label, "Diag Session");
+        assert_eq!(entries[1].label, "VIN");
+        assert_eq!(entries[2].label, "Software Part");
+        assert_eq!(entries[3].label, "V850 Part");
+        assert_eq!(entries[4].label, "Polar Part");
+        assert_eq!(entries[5].label, "ECU Serial");
+        assert_eq!(entries[6].label, "ECU Serial 2");
+        assert_eq!(entries[7].label, "IMC Status");
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value", entry.label);
             assert!(entry.error.is_none(), "{} should not have error", entry.label);
@@ -1344,45 +1336,51 @@ mod tests {
 
     #[test]
     fn test_imc_read_extended_session_fails_no_bench() {
-        // Extended Session fails, bench mode OFF → default-session DIDs work,
-        // fallback reads VIN + ECU Serial, rest show "enable bench mode"
+        // Extended Session fails → D100 + 6 DIDs read in Default Session + 0202 error = 8
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
 
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // Default session DIDs (read before Extended Session attempt)
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
+        // D100
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
-        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // Extended Session → NRC 0x12 (SubFunctionNotSupported)
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        // Default session fallback: VIN + ECU Serial
+        // TesterPresent + VIN
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+        // TesterPresent + Software Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
+        // TesterPresent + V850
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
+        // TesterPresent + Polar
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
+        // TesterPresent + ECU Serial
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
+        // TesterPresent + ECU Serial 2
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
+        // Extended Session → NRC 0x12 (fails)
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        // F111 + D100 + 0202 + VIN + ECU Serial + 4 error entries = 9
-        assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].label, "Firmware Part");
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.is_some());
-        assert_eq!(entries[3].label, "VIN");
-        assert!(entries[3].value.is_some(), "VIN should read in default session");
-        assert_eq!(entries[4].label, "ECU Serial");
-        assert!(entries[4].value.is_some(), "ECU Serial should read in default session");
-        // Remaining DIDs should have "enable bench mode" error
-        for entry in &entries[5..] {
-            assert!(entry.error.is_some(), "{} should have error", entry.label);
-            assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
-                "{}: wrong error message: {:?}", entry.label, entry.error);
-        }
+        assert_eq!(entries[1].label, "VIN");
+        assert!(entries[1].value.is_some(), "VIN works in Default Session per EXML");
+        // Last entry is 0202 with error (needs Extended Session)
+        assert_eq!(entries[7].label, "IMC Status");
+        assert!(entries[7].error.is_some());
+        assert!(entries[7].error.as_ref().unwrap().contains("Extended Session"));
     }
 
     #[test]
     fn test_imc_read_extended_session_fails_with_bench() {
-        // Extended Session fails after retries, bench mode IS ON → fallback reads VIN + ECU Serial,
-        // rest should NOT say "enable bench mode"
+        // Bench mode ON, Extended Session fails → all DIDs read in Default, 0202 gets error
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
@@ -1390,67 +1388,57 @@ mod tests {
 
         // Bench mode: TesterPresent poll (succeeds on first try)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // Default session DIDs (read before Extended Session attempt)
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
+        // D100
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
-        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // Extended Session retries: 5 attempts, all fail
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
+        // TesterPresent + VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        // Default session fallback: VIN + ECU Serial
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
+        // TesterPresent + Software Part
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
+        // TesterPresent + V850
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
+        // TesterPresent + Polar
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
+        // TesterPresent + ECU Serial
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
+        // TesterPresent + ECU Serial 2
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
+        // Extended Session → fails
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        // F111 + D100 + 0202 + VIN + ECU Serial + 4 error entries = 9
-        assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].label, "Firmware Part");
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.is_some());
-        assert_eq!(entries[3].label, "VIN");
-        assert!(entries[3].value.is_some(), "VIN should read in default session");
-        assert_eq!(entries[4].label, "ECU Serial");
-        assert!(entries[4].value.is_some(), "ECU Serial should read in default session");
-        // Remaining DIDs should have the correct message (NOT "enable bench mode")
-        for entry in &entries[5..] {
-            assert!(entry.error.is_some(), "{} should have error", entry.label);
-            let err = entry.error.as_ref().unwrap();
-            assert!(!err.contains("enable bench mode"),
-                "{}: should NOT say 'enable bench mode' when bench IS on. Got: {}", entry.label, err);
-            assert!(err.contains("CAN bus"),
-                "{}: should mention CAN bus. Got: {}", entry.label, err);
-        }
+        assert_eq!(entries[1].label, "VIN");
+        assert!(entries[1].value.is_some(), "VIN works in Default Session");
+        // 0202 should have error (needs Extended)
+        assert_eq!(entries[7].label, "IMC Status");
+        assert!(entries[7].error.is_some());
     }
 
     #[test]
-    fn test_imc_session_refresh_after_did_failure() {
-        // When a DID read fails (timeout), session should be refreshed before next DID
+    fn test_imc_did_failure_does_not_block_others() {
+        // When a DID read fails, subsequent DIDs should still be attempted
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
 
         // TesterPresent → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        // Default session DIDs (before Extended Session)
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
+        // D100 → OK
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
-        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // Extended Session → OK
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // TesterPresent + VIN → NRC 0x31 (requestOutOfRange, simulating failure)
+        // TesterPresent + VIN → NRC 0x31 (failure)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x31]);
-        // After VIN failure: session refresh (TesterPresent + Extended Session)
+        // TesterPresent + Software Part → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // Software Part → OK (after session refresh)
         mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
         // TesterPresent + V850 → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
@@ -1464,16 +1452,21 @@ mod tests {
         // TesterPresent + ECU Serial 2 → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
+        // Extended Session → OK
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // TesterPresent + 0202
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].label, "Firmware Part");
-        assert!(entries[0].value.is_some(), "Firmware Part should succeed");
-        assert_eq!(entries[3].label, "VIN");
-        assert!(entries[3].error.is_some(), "VIN should have error");
-        assert_eq!(entries[4].label, "Software Part");
-        assert!(entries[4].value.is_some(), "Software Part should succeed after session refresh");
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].label, "Diag Session");
+        assert!(entries[0].value.is_some(), "D100 should succeed");
+        assert_eq!(entries[1].label, "VIN");
+        assert!(entries[1].error.is_some(), "VIN should have error");
+        assert_eq!(entries[2].label, "Software Part");
+        assert!(entries[2].value.is_some(), "Software Part should succeed despite VIN failure");
     }
 
     // ─── NRC 0x21 retry tests ─────────────────────────────────────

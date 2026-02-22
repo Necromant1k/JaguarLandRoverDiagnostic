@@ -195,7 +195,7 @@ impl EcuHandler for IpcHandler {
 /// CAN broadcast messages captured from a real car that are NOT present on a bench
 /// with only the IMC. These simulate BCM/GWM/IPC presence on the CAN bus.
 /// Format: (CAN ID, 8-byte data)
-const BROADCAST_MSGS: &[(u32, [u8; 8])] = &[
+pub(crate) const BROADCAST_MSGS: &[(u32, [u8; 8])] = &[
     // From car CAN dump — IDs absent in bench-only dump
     (0x070, [0xFF, 0x87, 0xD0, 0xFE, 0xFE, 0x3F, 0xFF, 0x03]),
     (0x0B0, [0x00, 0x04, 0x32, 0x03, 0xF8, 0x0D, 0x35, 0x00]),
