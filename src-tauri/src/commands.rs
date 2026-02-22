@@ -244,11 +244,13 @@ pub fn toggle_bench_mode(
     let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
     let conn = conn.as_mut().ok_or("Not connected")?;
 
-    if enabled {
-        if conn.emulator_manager.is_some() {
-            return Ok(()); // Already running
-        }
+    // Always clean up any existing emulator/CAN channel first
+    if let Some(mut mgr) = conn.emulator_manager.take() {
+        mgr.stop();
+    }
+    conn.can_channel = None;
 
+    if enabled {
         // Parse ECU list, default to BCM only
         let ecu_ids: Vec<EcuId> = ecus
             .unwrap_or_else(|| vec!["bcm".to_string()])
@@ -281,11 +283,7 @@ pub fn toggle_bench_mode(
             &format!("Bench mode ON — emulating: {} (CAN broadcast active)", ecu_names.join(", ")),
         );
     } else {
-        if let Some(mut mgr) = conn.emulator_manager.take() {
-            mgr.stop();
-        }
-        // Close the CAN broadcast channel
-        conn.can_channel = None;
+        // Cleanup already done above
         emit_log_simple(&app, LogDirection::Rx, &[], "Bench mode OFF — emulation stopped");
     }
 
