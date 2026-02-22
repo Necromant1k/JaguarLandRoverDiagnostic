@@ -1099,8 +1099,6 @@ fn send_uds_request<R: tauri::Runtime>(
         match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
             Ok(resp) => return Ok(resp),
             Err(e) if e.contains("0x21") && busy_attempt < max_busy_retries => {
-                // EXML: MAX_RETRY_PERIOD=6000ms / MAX_BUSY_ATTEMPTS=6 = 1s per retry
-                std::thread::sleep(std::time::Duration::from_secs(1));
                 continue;
             }
             Err(e) => return Err(e),
