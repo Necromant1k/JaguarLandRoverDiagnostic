@@ -8,50 +8,40 @@
 /Users/andrei/JLR_SDD/JLR/IDS/Xml/       — Vehicle configs (EXML encrypted)
 ```
 
-### Decrypted EXML / Research
+Thats your source of truth. Any security access, dids and so on are there.
+
+### DID Sources — IMPORTANT
+Model-specific MDX EXML files (e.g. `MDX_IMC.exml`) are **incomplete** — they only list DIDs the SDD software download process uses, NOT all DIDs the ECU supports.
+
+The full list of standard ISO 14229 DIDs (0xF100-0xF1FF range) is in:
 ```
-/Users/andrei/jlr/                        — Main research folder
-/Users/andrei/jlr/CLAUDE.md              — Full research notes (MUST READ for IMC/security context)
-/Users/andrei/jlr/exml_decrypt.py        — EXML decryptor (3DES ECB)
-/Users/andrei/jlr/IMC_decrypted.xml      — Decrypted IMC config
-/Users/andrei/jlr/BCM_decrypted.xml      — Decrypted BCM config
-/Users/andrei/jlr/MDX_IMC_decrypted.xml  — Decrypted MDX (routines, DIDs)
+/Users/andrei/JLR_SDD/JLR/Common/SDD/Data/en/gradex/Snapshot/Unqualified DID Formatting.xml
 ```
+This file contains ALL standard DIDs across all ECU types. When looking for readable DIDs, ALWAYS check this file first, not just the model MDX.
 
-### CAN Dumps
-```
-/Users/andrei/jlr/can_dump_ign_onoff.txt      — Ignition on/off cycle (bench)
-/Users/andrei/jlr/can_dump_car.txt             — Real car CAN traffic
-/Users/andrei/jlr/can_dump_with_sdd.txt        — CAN during SDD session
-/Users/andrei/jlr/can_dump_ignition.txt        — Ignition sequence
-/Users/andrei/jlr/long_dump_ign_cycle.txt      — Long ignition cycle dump
-/Users/andrei/jlr/can_full_dump.txt            — Full raw CAN dump
-```
+Example: DID F111 (ECU Internal Number / firmware part) is NOT in any MDX but works perfectly on bench. F190 (VIN) times out because it's not programmed on bench units.
 
-### SDD Debug Logs
-```
-/Users/andrei/Downloads/forceign.dbg           — BCM auto-ignition flow
-/Users/andrei/Downloads/603d.dbg               — Successful 603D routine
-/Users/andrei/Downloads/sharedsecret.dbg       — Shared secret flow
-/Users/andrei/Downloads/failed.dbg             — Failed operation log
-```
+### Decode / Encode EXML
+Use exml_decrypt.py here in root proejct to decode any exmls.
 
-## IMC Bench Limitations
+### CAN dumps
+Within a project you can find various can dumps taken from a real vehicle.
 
-**CRITICAL**: On bench (without BCM/GWM on CAN bus):
-- Extended Session (10 03) → NRC 0x12 (SubFunctionNotSupported)
-- Programming Session (10 02) → Works, Level 0x01 unlock works
-- Many DIDs return NRC 0x31 or timeout in default session
-- Routines 603D/603E require Extended Session (blocked on bench)
+### Bench Mode Notes
+- MongoosePro JLR only supports ONE CAN channel — CAN broadcast (NM messages) cannot be sent while ISO15765 diagnostic channel is open
+- Security Access (0x27) is NOT needed for reading DIDs — only for routines. Attempting SA and getting NRC 0x37 disrupts ECU state
+- After any DID read failure/timeout, re-establish Extended Session (TesterPresent + 10 03) before next read — timeouts burn the S3 session timer
+- Stale NRC responses from previous requests can arrive late — always validate NRC service ID matches the request
+- Some DIDs (F190 VIN, F18C ECU Serial) timeout on bench because data was never programmed into the ECU
+- DID F111 (firmware part number) always works — it's burned at manufacture, no dependencies
 
-## IMC Protocol (from decrypted EXML)
 
-- TX: 0x7B3, RX: 0x7BB, 500kbps, 11-bit CAN
-- Max 1 DID per ReadDID request (`ISO14229_SERVICE_22_MAX_DATA_ID=1`)
-- RX timeout: 35s for engineering, 2s for TX
-- Max retry period: 6s, max pending period: 60s
-- Max busy attempts: 6
+### Connection to remote Windows Machine where UDS app is being tested
+sshpass to 192.168.1.16 with username "Andrei" and password "123".
+Folder under C:\udsapp 
 
-## SDD Auto-Ignition (BCM)
-- Routine 0x2038, start sub_func=0x01, param=0x01
-- BCM at 0x726/0x72E, 500kbps, 11-bit CAN
+### Changes
+After each change, you muts commit adn dont forget to keep pulling latest on windows machine.
+
+### Testing
+Never write garbage tests that do not test real flow, application. I dont wanna 200 tests running that do nothing and app doesnt work becuase main flows are not tested at all.
