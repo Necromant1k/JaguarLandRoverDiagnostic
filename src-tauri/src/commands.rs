@@ -517,8 +517,6 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     }
 
     // Step 3: Read DIDs (no Security Access needed per EXML — SA only for routines)
-    // Security Access attempt with NRC 0x37 disrupts ECU state, causing DID timeouts
-    entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status", emulator));
 
     // Helper: re-establish session after a DID failure (timeout burns session timer)
     let refresh_session = |app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel| {
@@ -527,12 +525,13 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     };
 
     if extended_ok {
-        // DIDs to read: (DID, label, formatter, category)
-        // F111 (ECU Internal Number) goes first — confirmed working on bench
-        // Removed F180 (PBL_PART) and F121 (TUNER_PART) — return NRC 0x31 on this IMC variant
+        // F111 first — no TesterPresent before it, minimize time between session change and first read
+        entries.push(read_did_entry(app, channel, tx, did::ECU_INTERNAL_NUMBER, "Firmware Part", format_string, "software", emulator));
+
+        // Rest of DIDs with TesterPresent keepalive between each
         let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
+            (did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status"),
             (did::IMC_STATUS, "IMC Status", format_imc_status, "status"),
-            (did::ECU_INTERNAL_NUMBER, "Firmware Part", format_string, "software"),
             (did::VIN, "VIN", format_string, "vehicle"),
             (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
             (did::V850_PART, "V850 Part", format_string, "software"),
@@ -1298,14 +1297,14 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → OK
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // D100 Diag Session
+        // F111 Firmware Part — immediately after Extended Session, no TesterPresent
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57, 0x39, 0x33]);
+        // TesterPresent + D100 Diag Session
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
         // TesterPresent + 0202 IMC Status
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // TesterPresent + F111 Firmware Part
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57, 0x39, 0x33]);
         // TesterPresent + F190 VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A]);
@@ -1327,11 +1326,10 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None);
 
-        // D100 + 8 DIDs (added F111, removed F180 PBL and F121 Tuner)
         assert_eq!(entries.len(), 9);
-        assert_eq!(entries[0].label, "Diag Session");
-        assert_eq!(entries[1].label, "IMC Status");
-        assert_eq!(entries[2].label, "Firmware Part");
+        assert_eq!(entries[0].label, "Firmware Part");
+        assert_eq!(entries[1].label, "Diag Session");
+        assert_eq!(entries[2].label, "IMC Status");
         assert_eq!(entries[3].label, "VIN");
         assert_eq!(entries[4].label, "Software Part");
         assert_eq!(entries[5].label, "V850 Part");
@@ -1355,24 +1353,19 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → NRC 0x12 (SubFunctionNotSupported)
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        // D100 → Default
-        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
         // Default session fallback: VIN + ECU Serial
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 9); // D100 + VIN + ECU Serial + 6 error entries
-        assert_eq!(entries[0].label, "Diag Session");
-        assert!(entries[0].value.as_ref().unwrap().contains("Default"));
-        // VIN and ECU Serial should have values from fallback
-        assert_eq!(entries[1].label, "VIN");
-        assert!(entries[1].value.is_some(), "VIN should read in default session");
-        assert_eq!(entries[2].label, "ECU Serial");
-        assert!(entries[2].value.is_some(), "ECU Serial should read in default session");
+        assert_eq!(entries.len(), 8); // VIN + ECU Serial + 6 error entries
+        assert_eq!(entries[0].label, "VIN");
+        assert!(entries[0].value.is_some(), "VIN should read in default session");
+        assert_eq!(entries[1].label, "ECU Serial");
+        assert!(entries[1].value.is_some(), "ECU Serial should read in default session");
         // Remaining DIDs should have "enable bench mode" error
-        for entry in &entries[3..] {
+        for entry in &entries[2..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             assert!(entry.error.as_ref().unwrap().contains("enable bench mode"),
                 "{}: wrong error message: {:?}", entry.label, entry.error);
@@ -1405,22 +1398,19 @@ mod tests {
         // Attempt 5: TesterPresent + Extended Session
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x7F, 0x10, 0x12]);
-        // D100 → Default
-        mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
         // Default session fallback: VIN + ECU Serial
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 9); // D100 + VIN + ECU Serial + 6 error entries
-        // VIN and ECU Serial should have values from fallback
-        assert_eq!(entries[1].label, "VIN");
-        assert!(entries[1].value.is_some(), "VIN should read in default session");
-        assert_eq!(entries[2].label, "ECU Serial");
-        assert!(entries[2].value.is_some(), "ECU Serial should read in default session");
+        assert_eq!(entries.len(), 8); // VIN + ECU Serial + 6 error entries
+        assert_eq!(entries[0].label, "VIN");
+        assert!(entries[0].value.is_some(), "VIN should read in default session");
+        assert_eq!(entries[1].label, "ECU Serial");
+        assert!(entries[1].value.is_some(), "ECU Serial should read in default session");
         // Remaining DIDs should have the correct message (NOT "enable bench mode")
-        for entry in &entries[3..] {
+        for entry in &entries[2..] {
             assert!(entry.error.is_some(), "{} should have error", entry.label);
             let err = entry.error.as_ref().unwrap();
             assert!(!err.contains("enable bench mode"),
@@ -1441,14 +1431,14 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → OK
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // D100 Diag Session → OK
+        // F111 Firmware Part — immediately after Extended Session, no TesterPresent
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
+        // TesterPresent + D100 Diag Session → OK
+        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
         // TesterPresent + IMC Status → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // TesterPresent + F111 Firmware Part → OK
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x11], vec![0x62, 0xF1, 0x11, 0x46, 0x57]);
         // TesterPresent + VIN → NRC 0x31 (requestOutOfRange, simulating failure)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x31]);
@@ -1473,9 +1463,8 @@ mod tests {
         let entries = read_imc_info(&app, &mock, None);
 
         assert_eq!(entries.len(), 9);
-        // Firmware Part should work, VIN should fail, rest should succeed after refresh
-        assert_eq!(entries[2].label, "Firmware Part");
-        assert!(entries[2].value.is_some(), "Firmware Part should succeed");
+        assert_eq!(entries[0].label, "Firmware Part");
+        assert!(entries[0].value.is_some(), "Firmware Part should succeed");
         assert_eq!(entries[3].label, "VIN");
         assert!(entries[3].error.is_some(), "VIN should have error");
         assert_eq!(entries[4].label, "Software Part");
