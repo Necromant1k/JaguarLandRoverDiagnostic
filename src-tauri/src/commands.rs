@@ -516,71 +516,47 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         emit_log_simple(app, LogDirection::Rx, &[], "Extended Session failed — trying default-session DIDs");
     }
 
-    // Step 3: Try Security Access (needed for VIN, software parts)
-    if extended_ok {
-        emit_log_simple(app, LogDirection::Tx, &[0x27, 0x11], "SecurityAccess RequestSeed (IMC)");
-        match send_uds_request(app, channel, tx, &[0x27, 0x11], false, emulator) {
-            Ok(seed_resp) if seed_resp.len() >= 5 => {
-                let seed_int = ((seed_resp[2] as u32) << 16) | ((seed_resp[3] as u32) << 8) | (seed_resp[4] as u32);
-                if seed_int != 0 {
-                    let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
-                    let key_bytes = [((key_int >> 16) & 0xFF) as u8, ((key_int >> 8) & 0xFF) as u8, (key_int & 0xFF) as u8];
-                    let mut key_req = vec![0x27, 0x12];
-                    key_req.extend_from_slice(&key_bytes);
-                    emit_log_simple(app, LogDirection::Tx, &key_req, "SecurityAccess SendKey (IMC)");
-                    match send_uds_request(app, channel, tx, &key_req, false, emulator) {
-                        Ok(_) => emit_log_simple(app, LogDirection::Rx, &[], "Security Access OK"),
-                        Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("Security Access failed: {} — continuing without", e)),
-                    }
-                } else {
-                    emit_log_simple(app, LogDirection::Rx, &[], "Already unlocked (zero seed)");
-                }
-            }
-            Ok(_) => {}
-            Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("Security seed failed: {} — continuing without", e)),
-        }
-    }
-
-    // Step 4: Read DIDs
+    // Step 3: Read DIDs (no Security Access needed per EXML — SA only for routines)
+    // Security Access attempt with NRC 0x37 disrupts ECU state, causing DID timeouts
     entries.push(read_did_entry(app, channel, tx, did::ACTIVE_DIAG_SESSION, "Diag Session", format_diag_session, "status", emulator));
 
+    // Helper: re-establish session after a DID failure (timeout burns session timer)
+    let refresh_session = |app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel| {
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+    };
+
     if extended_ok {
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::IMC_STATUS, "IMC Status", format_imc_status, "status", emulator));
+        // DIDs to read: (DID, label, formatter, category)
+        // Removed F180 (PBL_PART) and F121 (TUNER_PART) — return NRC 0x31 on this IMC variant
+        let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
+            (did::IMC_STATUS, "IMC Status", format_imc_status, "status"),
+            (did::VIN, "VIN", format_string, "vehicle"),
+            (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
+            (did::V850_PART, "V850 Part", format_string, "software"),
+            (did::POLAR_PART, "Polar Part", format_string, "software"),
+            (did::ECU_SERIAL, "ECU Serial", format_string, "hardware"),
+            (did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware"),
+        ];
 
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "Software Part", format_string, "software", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::PBL_PART, "Bootloader", format_string, "software", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::V850_PART, "V850 Part", format_string, "software", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::TUNER_PART, "Tuner Part", format_string, "software", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::POLAR_PART, "Polar Part", format_string, "software", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator));
-
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware", emulator));
+        let mut last_failed = false;
+        for (did_id, label, formatter, category) in &dids {
+            if last_failed {
+                // Re-establish extended session after a failed read (timeout burns S3 timer)
+                refresh_session(app, channel);
+            } else {
+                let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+            }
+            let entry = read_did_entry(app, channel, tx, *did_id, label, *formatter, category, emulator);
+            last_failed = entry.error.is_some();
+            entries.push(entry);
+        }
     } else {
         // Default session fallback: try VIN and ECU Serial anyway
         emit_log_simple(app, LogDirection::Tx, &[], "Trying default-session DIDs (VIN, ECU Serial)...");
-
-        // Try VIN in default session
         entries.push(read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator));
-        // Try ECU Serial in default session
         entries.push(read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator));
 
-        // Rest require Extended Session — show clear error
         let err_msg = if bench_mode {
             "Extended Session failed — IMC needs other ECUs on CAN bus"
         } else {
@@ -589,9 +565,7 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
         for (did_id, label, category) in [
             (did::IMC_STATUS, "IMC Status", "status"),
             (did::MASTER_RPM_PART, "Software Part", "software"),
-            (did::PBL_PART, "Bootloader", "software"),
             (did::V850_PART, "V850 Part", "software"),
-            (did::TUNER_PART, "Tuner Part", "software"),
             (did::POLAR_PART, "Polar Part", "software"),
             (did::ECU_SERIAL2, "ECU Serial 2", "hardware"),
         ] {
@@ -756,47 +730,66 @@ fn read_ccf_inner(
     let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel available")?;
     let emulator = conn.emulator_manager.as_ref();
 
+    let bench_mode = emulator.is_some();
+
     // SDD prerequisite flow (no security needed for CCF)
     sdd_prerequisite_flow(app, channel, false, emulator)?;
 
-    // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
-    let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
-    emit_log_simple(app, LogDirection::Tx, &retrieve_req, "RoutineControl Retrieve CCF (0x0E00)");
-    match send_uds_request(app, channel, ecu_addr::IMC_TX, &retrieve_req, true, emulator) {
-        Ok(resp) => {
-            let data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
-            emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF OK: {} bytes", data.len()));
-            if !data.is_empty() {
-                return Ok(parse_ccf_entries(data));
-            }
-            // If Retrieve returned no data, try Request Results
-            let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
-            let results_req = vec![0x31, 0x03, 0x0E, 0x00];
-            emit_log_simple(app, LogDirection::Tx, &results_req, "RoutineControl Request Results CCF (0x0E00)");
-            if let Ok(results_resp) = send_uds_request(app, channel, ecu_addr::IMC_TX, &results_req, true, emulator) {
-                let results_data = if results_resp.len() > 4 { &results_resp[4..] } else { &[] as &[u8] };
-                if !results_data.is_empty() {
-                    emit_log_simple(app, LogDirection::Rx, &[], &format!("CCF Results: {} bytes", results_data.len()));
-                    return Ok(parse_ccf_entries(results_data));
+    // On bench, skip Retrieve CCF (0x0E00) — it downloads from GWM which doesn't exist on bench.
+    // Go directly to List CCF (0x0E02) which reads what's stored in IMC flash.
+    if !bench_mode {
+        // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
+        let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
+        emit_log_simple(app, LogDirection::Tx, &retrieve_req, "RoutineControl Retrieve CCF (0x0E00)");
+        match send_uds_request(app, channel, ecu_addr::IMC_TX, &retrieve_req, true, emulator) {
+            Ok(resp) => {
+                let data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF OK: {} bytes", data.len()));
+                if !data.is_empty() {
+                    return Ok(parse_ccf_entries(data));
+                }
+                // If Retrieve returned no data, try Request Results
+                let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
+                let results_req = vec![0x31, 0x03, 0x0E, 0x00];
+                emit_log_simple(app, LogDirection::Tx, &results_req, "RoutineControl Request Results CCF (0x0E00)");
+                if let Ok(results_resp) = send_uds_request(app, channel, ecu_addr::IMC_TX, &results_req, true, emulator) {
+                    let results_data = if results_resp.len() > 4 { &results_resp[4..] } else { &[] as &[u8] };
+                    if !results_data.is_empty() {
+                        emit_log_simple(app, LogDirection::Rx, &[], &format!("CCF Results: {} bytes", results_data.len()));
+                        return Ok(parse_ccf_entries(results_data));
+                    }
                 }
             }
+            Err(e) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF failed: {} — trying List", e));
+            }
         }
-        Err(e) => {
-            emit_log_simple(app, LogDirection::Rx, &[], &format!("Retrieve CCF failed: {} — trying List", e));
-        }
+    } else {
+        emit_log_simple(app, LogDirection::Tx, &[], "Bench mode: skipping Retrieve CCF (no GWM on bus)");
     }
 
-    // Step 2: Fallback — List CCF (0x0E02) to read what's stored
+    // List CCF (0x0E02) — reads what's stored in IMC flash
     let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
     let list_req = vec![0x31, 0x01, 0x0E, 0x02];
     emit_log_simple(app, LogDirection::Tx, &list_req, "RoutineControl List CCF (0x0E02)");
-    let resp = send_uds_request(app, channel, ecu_addr::IMC_TX, &list_req, true, emulator)
-        .map_err(|e| format!("List CCF failed: {}", e))?;
-
-    let ccf_data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
-    emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF: {} bytes", ccf_data.len()));
-
-    Ok(parse_ccf_entries(ccf_data))
+    match send_uds_request(app, channel, ecu_addr::IMC_TX, &list_req, true, emulator) {
+        Ok(resp) => {
+            let ccf_data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF: {} bytes", ccf_data.len()));
+            Ok(parse_ccf_entries(ccf_data))
+        }
+        Err(e) => {
+            emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF failed: {}", e));
+            // Return informative error instead of propagating
+            Ok(vec![EcuInfoEntry {
+                label: "CCF Status".to_string(),
+                did_hex: "CCF".to_string(),
+                value: None,
+                error: Some(format!("CCF not available: {}", e)),
+                category: "config".to_string(),
+            }])
+        }
+    }
 }
 
 /// Parse CCF response data into structured entries
@@ -1284,7 +1277,8 @@ mod tests {
 
     #[test]
     fn test_imc_read_extended_session_ok() {
-        // IMC with Extended Session succeeding — should read all DIDs from EXML
+        // IMC with Extended Session succeeding — should read all DIDs
+        // No Security Access (EXML shows DIDs don't need it)
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
@@ -1293,14 +1287,6 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → OK
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // Security Access seed → seed response
-        mock.expect_request(tx, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
-        let seed_int = 0x112233u32;
-        let key_int = crate::uds::keygen::keygen_mki(seed_int, &crate::uds::keygen::DC0314_CONSTANTS);
-        let key_bytes = [((key_int >> 16) & 0xFF) as u8, ((key_int >> 8) & 0xFF) as u8, (key_int & 0xFF) as u8];
-        let mut key_req = vec![0x27, 0x12];
-        key_req.extend_from_slice(&key_bytes);
-        mock.expect_request(tx, key_req, vec![0x67, 0x12]);
         // D100 Diag Session
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
         // TesterPresent + 0202 IMC Status
@@ -1312,15 +1298,9 @@ mod tests {
         // TesterPresent + F188 Software Part
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
-        // TesterPresent + F180 Bootloader
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C]);
         // TesterPresent + F120 V850
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
-        // TesterPresent + F121 Tuner
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x21], vec![0x62, 0xF1, 0x21, 0x54, 0x55]);
         // TesterPresent + F1A5 Polar
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
@@ -1333,27 +1313,16 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 10); // D100 + 9 DIDs from EXML
+        // D100 + 7 DIDs (removed F180 PBL and F121 Tuner — NRC 0x31 on real ECU)
+        assert_eq!(entries.len(), 8);
         assert_eq!(entries[0].label, "Diag Session");
-        assert_eq!(entries[0].category, "status");
         assert_eq!(entries[1].label, "IMC Status");
-        assert_eq!(entries[1].category, "status");
         assert_eq!(entries[2].label, "VIN");
-        assert_eq!(entries[2].category, "vehicle");
         assert_eq!(entries[3].label, "Software Part");
-        assert_eq!(entries[3].category, "software");
-        assert_eq!(entries[4].label, "Bootloader");
-        assert_eq!(entries[4].category, "software");
-        assert_eq!(entries[5].label, "V850 Part");
-        assert_eq!(entries[5].category, "software");
-        assert_eq!(entries[6].label, "Tuner Part");
-        assert_eq!(entries[6].category, "software");
-        assert_eq!(entries[7].label, "Polar Part");
-        assert_eq!(entries[7].category, "software");
-        assert_eq!(entries[8].label, "ECU Serial");
-        assert_eq!(entries[8].category, "hardware");
-        assert_eq!(entries[9].label, "ECU Serial 2");
-        assert_eq!(entries[9].category, "hardware");
+        assert_eq!(entries[4].label, "V850 Part");
+        assert_eq!(entries[5].label, "Polar Part");
+        assert_eq!(entries[6].label, "ECU Serial");
+        assert_eq!(entries[7].label, "ECU Serial 2");
         for entry in &entries {
             assert!(entry.value.is_some(), "{} should have value", entry.label);
             assert!(entry.error.is_none(), "{} should not have error", entry.label);
@@ -1379,7 +1348,7 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, None); // No emulator = no bench mode
 
-        assert_eq!(entries.len(), 10); // D100 + VIN + ECU Serial + 7 error entries
+        assert_eq!(entries.len(), 8); // D100 + VIN + ECU Serial + 5 error entries
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.as_ref().unwrap().contains("Default"));
         // VIN and ECU Serial should have values from fallback
@@ -1429,7 +1398,7 @@ mod tests {
 
         let entries = read_imc_info(&app, &mock, Some(&emu));
 
-        assert_eq!(entries.len(), 10); // D100 + VIN + ECU Serial + 7 error entries
+        assert_eq!(entries.len(), 8); // D100 + VIN + ECU Serial + 5 error entries
         // VIN and ECU Serial should have values from fallback
         assert_eq!(entries[1].label, "VIN");
         assert!(entries[1].value.is_some(), "VIN should read in default session");
@@ -1447,8 +1416,8 @@ mod tests {
     }
 
     #[test]
-    fn test_imc_security_access_fails_gracefully() {
-        // Security Access returns NRC 0x7F (serviceNotSupportedInActiveSession) — DIDs still read
+    fn test_imc_session_refresh_after_did_failure() {
+        // When a DID read fails (timeout), session should be refreshed before next DID
         let app = test_app();
         let mock = setup_mock_channel();
         let tx = ecu_addr::IMC_TX;
@@ -1457,46 +1426,40 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended Session → OK
         mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
-        // Security seed → NRC 0x7F (serviceNotSupportedInActiveSession)
-        mock.expect_request(tx, vec![0x27, 0x11], vec![0x7F, 0x27, 0x7F]);
-        // D100 Diag Session
+        // D100 Diag Session → OK
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x03]);
-        // TesterPresent + IMC Status
+        // TesterPresent + IMC Status → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0x00]);
-        // TesterPresent + VIN
+        // TesterPresent + VIN → NRC 0x31 (requestOutOfRange, simulating failure)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x56, 0x49, 0x4E]);
-        // TesterPresent + Software Part
+        mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x7F, 0x22, 0x31]);
+        // After VIN failure: session refresh (TesterPresent + Extended Session)
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
+        mock.expect_request(tx, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+        // Software Part → OK (after session refresh)
         mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
-        // TesterPresent + Bootloader
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x80], vec![0x62, 0xF1, 0x80, 0x42, 0x4C]);
-        // TesterPresent + V850
+        // TesterPresent + V850 → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
-        // TesterPresent + Tuner
-        mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(tx, vec![0x22, 0xF1, 0x21], vec![0x62, 0xF1, 0x21, 0x54, 0x55]);
-        // TesterPresent + Polar
+        // TesterPresent + Polar → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
-        // TesterPresent + ECU Serial
+        // TesterPresent + ECU Serial → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
-        // TesterPresent + ECU Serial 2
+        // TesterPresent + ECU Serial 2 → OK
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
 
         let entries = read_imc_info(&app, &mock, None);
 
-        assert_eq!(entries.len(), 10);
-        // All should still have values despite security failure
-        for entry in &entries {
-            assert!(entry.value.is_some(), "{} should have value even without security", entry.label);
-            assert!(entry.error.is_none(), "{} should not have error", entry.label);
-        }
+        assert_eq!(entries.len(), 8);
+        // VIN should have error, rest should succeed (session was refreshed)
+        assert_eq!(entries[2].label, "VIN");
+        assert!(entries[2].error.is_some(), "VIN should have error");
+        assert_eq!(entries[3].label, "Software Part");
+        assert!(entries[3].value.is_some(), "Software Part should succeed after session refresh");
     }
 
     // ─── NRC 0x21 retry tests ─────────────────────────────────────
