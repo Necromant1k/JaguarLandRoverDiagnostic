@@ -1,0 +1,593 @@
+{
+  "bcm_block_bytes": 1024,
+  "gwm_block_bytes": 2000,
+  "imc_block_bytes": null,
+  "mismatches": 3,
+  "options": [
+    {
+      "bcm": "Doors: 0x1D (unknown)",
+      "gwm": "Doors: 0xB7 (unknown)",
+      "id": 1,
+      "imc": null,
+      "mismatch": true,
+      "name": "Doors"
+    },
+    {
+      "bcm": "Transmission Driveline: 0x04 (unknown)",
+      "gwm": "Transmission Driveline: 0x04 (unknown)",
+      "id": 2,
+      "imc": null,
+      "mismatch": false,
+      "name": "Transmission Driveline"
+    },
+    {
+      "bcm": "Bifuel: 0x64 (unknown)",
+      "gwm": "Bifuel: 0x64 (unknown)",
+      "id": 3,
+      "imc": null,
+      "mismatch": false,
+      "name": "Bifuel"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 4,
+      "imc": null,
+      "mismatch": false,
+      "name": "Engine"
+    },
+    {
+      "bcm": "AJ126 (0x01)",
+      "gwm": "UNDEF (0x00)",
+      "id": 6,
+      "imc": null,
+      "mismatch": true,
+      "name": "Alternator"
+    },
+    {
+      "bcm": "ITP_01: 0x00 (unknown)",
+      "gwm": "ITP_01: 0x40 (unknown)",
+      "id": 7,
+      "imc": null,
+      "mismatch": true,
+      "name": "ITP_01"
+    },
+    {
+      "bcm": "Manual 6-speed FWD (0x01)",
+      "gwm": "Manual 6-speed FWD (0x01)",
+      "id": 8,
+      "imc": null,
+      "mismatch": false,
+      "name": "Gearbox"
+    },
+    {
+      "bcm": "MAN (0x01)",
+      "gwm": "MAN (0x01)",
+      "id": 9,
+      "imc": null,
+      "mismatch": false,
+      "name": "Gearbox Type"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 10,
+      "imc": null,
+      "mismatch": false,
+      "name": "Fuel Tank Volume"
+    },
+    {
+      "bcm": "Alarm: 0x14 (unknown)",
+      "gwm": "Alarm: 0x14 (unknown)",
+      "id": 11,
+      "imc": null,
+      "mismatch": false,
+      "name": "Alarm"
+    },
+    {
+      "bcm": "ITP_02: 0x03 (unknown)",
+      "gwm": "ITP_02: 0x03 (unknown)",
+      "id": 14,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_02"
+    },
+    {
+      "bcm": "Dayrunning Light: 0x94 (unknown)",
+      "gwm": "Dayrunning Light: 0x94 (unknown)",
+      "id": 15,
+      "imc": null,
+      "mismatch": false,
+      "name": "Dayrunning Light"
+    },
+    {
+      "bcm": "Headlights Dimmed Dipped: 0x12 (unknown)",
+      "gwm": "Headlights Dimmed Dipped: 0x12 (unknown)",
+      "id": 16,
+      "imc": null,
+      "mismatch": false,
+      "name": "Headlights Dimmed Dipped"
+    },
+    {
+      "bcm": "N_FOGLIGHT (0x01)",
+      "gwm": "N_FOGLIGHT (0x01)",
+      "id": 17,
+      "imc": null,
+      "mismatch": false,
+      "name": "Foglight Function"
+    },
+    {
+      "bcm": "Rear Foglight Tow Function: 0x04 (unknown)",
+      "gwm": "Rear Foglight Tow Function: 0x04 (unknown)",
+      "id": 18,
+      "imc": null,
+      "mismatch": false,
+      "name": "Rear Foglight Tow Function"
+    },
+    {
+      "bcm": "TRAILER_7_PSU (0x04)",
+      "gwm": "TRAILER_7_PSU (0x04)",
+      "id": 19,
+      "imc": null,
+      "mismatch": false,
+      "name": "Trailer Module"
+    },
+    {
+      "bcm": "ITP_03: 0x1A (unknown)",
+      "gwm": "ITP_03: 0x1A (unknown)",
+      "id": 21,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_03"
+    },
+    {
+      "bcm": "ACC (0x03)",
+      "gwm": "ACC (0x03)",
+      "id": 22,
+      "imc": null,
+      "mismatch": false,
+      "name": "Cruise Control"
+    },
+    {
+      "bcm": "RAIN_SENSE (0x02)",
+      "gwm": "RAIN_SENSE (0x02)",
+      "id": 23,
+      "imc": null,
+      "mismatch": false,
+      "name": "Rainsensor"
+    },
+    {
+      "bcm": "Power Steering Type: 0x9A (unknown)",
+      "gwm": "Power Steering Type: 0x9A (unknown)",
+      "id": 25,
+      "imc": null,
+      "mismatch": false,
+      "name": "Power Steering Type"
+    },
+    {
+      "bcm": "N_PRIV_TRUNK (0x01)",
+      "gwm": "N_PRIV_TRUNK (0x01)",
+      "id": 27,
+      "imc": null,
+      "mismatch": false,
+      "name": "Private Locking Trunk"
+    },
+    {
+      "bcm": "One step opening (0x01)",
+      "gwm": "One step opening (0x01)",
+      "id": 29,
+      "imc": null,
+      "mismatch": false,
+      "name": "Unlock setting"
+    },
+    {
+      "bcm": "Acknowledge signal lock/alarm: 0x4A (unknown)",
+      "gwm": "Acknowledge signal lock/alarm: 0x4A (unknown)",
+      "id": 30,
+      "imc": null,
+      "mismatch": false,
+      "name": "Acknowledge signal lock/alarm"
+    },
+    {
+      "bcm": "Automatic locking (0x02)",
+      "gwm": "Automatic locking (0x02)",
+      "id": 31,
+      "imc": null,
+      "mismatch": false,
+      "name": "Automatic locking by speed"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 32,
+      "imc": null,
+      "mismatch": false,
+      "name": "Level Sensor If Alarm"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 33,
+      "imc": null,
+      "mismatch": false,
+      "name": "Key Lock Protect"
+    },
+    {
+      "bcm": "Key Lock Prot Int: 0x01 (unknown)",
+      "gwm": "Key Lock Prot Int: 0x01 (unknown)",
+      "id": 34,
+      "imc": null,
+      "mismatch": false,
+      "name": "Key Lock Prot Int"
+    },
+    {
+      "bcm": "ITP_05: 0x04 (unknown)",
+      "gwm": "ITP_05: 0x04 (unknown)",
+      "id": 35,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_05"
+    },
+    {
+      "bcm": "Side object detection - Blind spot information system: 0x25 (unknown)",
+      "gwm": "Side object detection - Blind spot information system: 0x25 (unknown)",
+      "id": 36,
+      "imc": null,
+      "mismatch": false,
+      "name": "Side object detection - Blind spot information system"
+    },
+    {
+      "bcm": "Roof Type: 0x58 (unknown)",
+      "gwm": "Roof Type: 0x58 (unknown)",
+      "id": 65,
+      "imc": null,
+      "mismatch": false,
+      "name": "Roof Type"
+    },
+    {
+      "bcm": "Emission Standard: 0x43 (unknown)",
+      "gwm": "Emission Standard: 0x43 (unknown)",
+      "id": 67,
+      "imc": null,
+      "mismatch": false,
+      "name": "Emission Standard"
+    },
+    {
+      "bcm": "Body Style: 0x05 (unknown)",
+      "gwm": "Body Style: 0x05 (unknown)",
+      "id": 68,
+      "imc": null,
+      "mismatch": false,
+      "name": "Body Style"
+    },
+    {
+      "bcm": "Tyre Dimension: 0x03 (unknown)",
+      "gwm": "Tyre Dimension: 0x03 (unknown)",
+      "id": 69,
+      "imc": null,
+      "mismatch": false,
+      "name": "Tyre Dimension"
+    },
+    {
+      "bcm": "ITP_10: 0x02 (unknown)",
+      "gwm": "ITP_10: 0x02 (unknown)",
+      "id": 70,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_10"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 71,
+      "imc": null,
+      "mismatch": false,
+      "name": "Navigation Traveller Assistance"
+    },
+    {
+      "bcm": "RCM CCF Assembly Part Number 01: 0x00 (unknown)",
+      "gwm": "RCM CCF Assembly Part Number 01: 0x00 (unknown)",
+      "id": 72,
+      "imc": null,
+      "mismatch": false,
+      "name": "RCM CCF Assembly Part Number 01"
+    },
+    {
+      "bcm": "STD (0x01)",
+      "gwm": "STD (0x01)",
+      "id": 73,
+      "imc": null,
+      "mismatch": false,
+      "name": "Suspension"
+    },
+    {
+      "bcm": "ITP_11: 0x00 (unknown)",
+      "gwm": "ITP_11: 0x00 (unknown)",
+      "id": 77,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_11"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 79,
+      "imc": null,
+      "mismatch": false,
+      "name": "Wheelbase Series"
+    },
+    {
+      "bcm": "CONT_CTRL (0x02)",
+      "gwm": "CONT_CTRL (0x02)",
+      "id": 80,
+      "imc": null,
+      "mismatch": false,
+      "name": "Active Suspension"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 81,
+      "imc": null,
+      "mismatch": false,
+      "name": "Steering Gear"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 82,
+      "imc": null,
+      "mismatch": false,
+      "name": "Central Lock Type"
+    },
+    {
+      "bcm": "Side Windows: 0x09 (unknown)",
+      "gwm": "Side Windows: 0x09 (unknown)",
+      "id": 83,
+      "imc": null,
+      "mismatch": false,
+      "name": "Side Windows"
+    },
+    {
+      "bcm": "ITP_12: 0x27 (unknown)",
+      "gwm": "ITP_12: 0x27 (unknown)",
+      "id": 84,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_12"
+    },
+    {
+      "bcm": "Puddle Light Outer Mirrors: 0x31 (unknown)",
+      "gwm": "Puddle Light Outer Mirrors: 0x31 (unknown)",
+      "id": 86,
+      "imc": null,
+      "mismatch": false,
+      "name": "Puddle Light Outer Mirrors"
+    },
+    {
+      "bcm": "Auto Lights: 0x36 (unknown)",
+      "gwm": "Auto Lights: 0x36 (unknown)",
+      "id": 87,
+      "imc": null,
+      "mismatch": false,
+      "name": "Auto Lights"
+    },
+    {
+      "bcm": "Airbag Passenger Side: 0x33 (unknown)",
+      "gwm": "Airbag Passenger Side: 0x33 (unknown)",
+      "id": 88,
+      "imc": null,
+      "mismatch": false,
+      "name": "Airbag Passenger Side"
+    },
+    {
+      "bcm": "Cutoff Switch Passenger Airbag: 0x35 (unknown)",
+      "gwm": "Cutoff Switch Passenger Airbag: 0x35 (unknown)",
+      "id": 89,
+      "imc": null,
+      "mismatch": false,
+      "name": "Cutoff Switch Passenger Airbag"
+    },
+    {
+      "bcm": "Side Airbag Thorax Driver: 0x33 (unknown)",
+      "gwm": "Side Airbag Thorax Driver: 0x33 (unknown)",
+      "id": 90,
+      "imc": null,
+      "mismatch": false,
+      "name": "Side Airbag Thorax Driver"
+    },
+    {
+      "bcm": "ITP_13: 0x02 (unknown)",
+      "gwm": "ITP_13: 0x02 (unknown)",
+      "id": 91,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_13"
+    },
+    {
+      "bcm": "FRENCH (0x07)",
+      "gwm": "FRENCH (0x07)",
+      "id": 92,
+      "imc": null,
+      "mismatch": false,
+      "name": "Language"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 93,
+      "imc": null,
+      "mismatch": false,
+      "name": "El Car Heater"
+    },
+    {
+      "bcm": "NOT_USED (0x00)",
+      "gwm": "NOT_USED (0x00)",
+      "id": 94,
+      "imc": null,
+      "mismatch": false,
+      "name": "Cupe Ventilation"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 95,
+      "imc": null,
+      "mismatch": false,
+      "name": "Collision Mitigation By Braking"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 96,
+      "imc": null,
+      "mismatch": false,
+      "name": "Forward Collision Warning"
+    },
+    {
+      "bcm": "Lane Departure Warning: 0x01 (unknown)",
+      "gwm": "Lane Departure Warning: 0x01 (unknown)",
+      "id": 97,
+      "imc": null,
+      "mismatch": false,
+      "name": "Lane Departure Warning"
+    },
+    {
+      "bcm": "ITP_14: 0x00 (unknown)",
+      "gwm": "ITP_14: 0x00 (unknown)",
+      "id": 98,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_14"
+    },
+    {
+      "bcm": "LUGGAGE_12V_OUTLET (0x02)",
+      "gwm": "LUGGAGE_12V_OUTLET (0x02)",
+      "id": 99,
+      "imc": null,
+      "mismatch": false,
+      "name": "12 Volt Outlet Luggage"
+    },
+    {
+      "bcm": "Tyre Pressure Mode System: 0x08 (unknown)",
+      "gwm": "Tyre Pressure Mode System: 0x08 (unknown)",
+      "id": 100,
+      "imc": null,
+      "mismatch": false,
+      "name": "Tyre Pressure Mode System"
+    },
+    {
+      "bcm": "N_OIL_LEVEL_SENSE (0x01)",
+      "gwm": "N_OIL_LEVEL_SENSE (0x01)",
+      "id": 101,
+      "imc": null,
+      "mismatch": false,
+      "name": "Oil Level Sensor"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 102,
+      "imc": null,
+      "mismatch": false,
+      "name": "Roll Stability Control"
+    },
+    {
+      "bcm": "ITP_15: 0x04 (unknown)",
+      "gwm": "ITP_15: 0x04 (unknown)",
+      "id": 105,
+      "imc": null,
+      "mismatch": false,
+      "name": "ITP_15"
+    },
+    {
+      "bcm": "ROOF_HATCH (0x01)",
+      "gwm": "ROOF_HATCH (0x01)",
+      "id": 107,
+      "imc": null,
+      "mismatch": false,
+      "name": "Roof Hatch"
+    },
+    {
+      "bcm": "Powered rear windows: 0x28 (unknown)",
+      "gwm": "Powered rear windows: 0x28 (unknown)",
+      "id": 108,
+      "imc": null,
+      "mismatch": false,
+      "name": "Powered rear windows"
+    },
+    {
+      "bcm": "Frequency band and step for EU (0x01)",
+      "gwm": "Frequency band and step for EU (0x01)",
+      "id": 109,
+      "imc": null,
+      "mismatch": false,
+      "name": "Audio unit (radio) band/frequency setting"
+    },
+    {
+      "bcm": "Trim Level: 0x3E (unknown)",
+      "gwm": "Trim Level: 0x3E (unknown)",
+      "id": 110,
+      "imc": null,
+      "mismatch": false,
+      "name": "Trim Level"
+    },
+    {
+      "bcm": "In car entertainment: 0x00 (unknown)",
+      "gwm": "In car entertainment: 0x00 (unknown)",
+      "id": 111,
+      "imc": null,
+      "mismatch": false,
+      "name": "In car entertainment"
+    },
+    {
+      "bcm": "Voice Control: 0x45 (unknown)",
+      "gwm": "Voice Control: 0x45 (unknown)",
+      "id": 112,
+      "imc": null,
+      "mismatch": false,
+      "name": "Voice Control"
+    },
+    {
+      "bcm": "N_SPEEDO_BIAS (0x01)",
+      "gwm": "N_SPEEDO_BIAS (0x01)",
+      "id": 113,
+      "imc": null,
+      "mismatch": false,
+      "name": "Speedo Bias"
+    },
+    {
+      "bcm": "Speed Lock: 0x83 (unknown)",
+      "gwm": "Speed Lock: 0x83 (unknown)",
+      "id": 114,
+      "imc": null,
+      "mismatch": false,
+      "name": "Speed Lock"
+    },
+    {
+      "bcm": "Speedometer: 0x09 (unknown)",
+      "gwm": "Speedometer: 0x09 (unknown)",
+      "id": 116,
+      "imc": null,
+      "mismatch": false,
+      "name": "Speedometer"
+    },
+    {
+      "bcm": "UNDEF (0x00)",
+      "gwm": "UNDEF (0x00)",
+      "id": 117,
+      "imc": null,
+      "mismatch": false,
+      "name": "Tachograph"
+    },
+    {
+      "bcm": "CENTRE_SPEAKER_LARGE (0x03)",
+      "gwm": "CENTRE_SPEAKER_LARGE (0x03)",
+      "id": 119,
+      "imc": null,
+      "mismatch": false,
+      "name": "Centre Speaker Dashboard"
+    }
+  ],
+  "timestamp": "2026-02-23 12:50:46"
+}
