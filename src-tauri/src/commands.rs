@@ -1586,26 +1586,40 @@ fn read_ccf_report_imc<R: tauri::Runtime>(
         false,
         emulator,
     );
-    // Try 0x0E01 with no args, then with arg 0x01 (GWM_SYSTEM_A source)
-    for args in [vec![0x31u8, 0x01, 0x0E, 0x01], vec![0x31, 0x01, 0x0E, 0x01, 0x01]] {
-        let label = if args.len() == 4 {
-            "RoutineControl Report CCF (0x0E01)"
-        } else {
-            "RoutineControl Report CCF (0x0E01 src=01)"
-        };
-        emit_log_simple(app, LogDirection::Tx, &args, label);
-        match send_uds_request(app, channel, ecu_addr::IMC_TX, &args, true, emulator) {
+    // Try multiple approaches — log everything for analysis
+    let attempts: &[(&[u8], &str)] = &[
+        (&[0x31, 0x01, 0x0E, 0x01],             "0x0E01 no args"),
+        (&[0x31, 0x01, 0x0E, 0x01, 0x01],       "0x0E01 src=01"),
+        (&[0x31, 0x01, 0x0E, 0x01, 0xEE, 0x00], "0x0E01 DID=EE00"),
+        (&[0x31, 0x01, 0x0E, 0x01, 0x01, 0x70], "0x0E01 blk=01..70"),
+        (&[0x31, 0x01, 0x0E, 0x00, 0xEE, 0x00], "0x0E00 DID=EE00"),
+        (&[0x31, 0x03, 0x0E, 0x00],             "0x0E00 request results"),
+        (&[0x31, 0x01, 0x0E, 0x0B],             "0x0E0B Read Rejected CCF"),
+        (&[0x31, 0x01, 0x0E, 0x0B, 0xEE, 0x00], "0x0E0B DID=EE00"),
+    ];
+
+    for (req, label) in attempts {
+        let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
+        emit_log_simple(app, LogDirection::Tx, req, label);
+        match send_uds_request(app, channel, ecu_addr::IMC_TX, req, true, emulator) {
             Ok(resp) if resp.len() > 4 => {
                 let data = resp[4..].to_vec();
                 emit_log_simple(
                     app,
                     LogDirection::Rx,
                     &[],
-                    &format!("IMC Report CCF OK: {} bytes", data.len()),
+                    &format!("IMC CCF via {}: {} bytes", label, data.len()),
                 );
                 return Some(data);
             }
-            Ok(_) => {}
+            Ok(resp) => {
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &resp,
+                    &format!("{} short response", label),
+                );
+            }
             Err(e) => {
                 emit_log_simple(
                     app,
@@ -1617,29 +1631,14 @@ fn read_ccf_report_imc<R: tauri::Runtime>(
         }
     }
 
-    // Try 0x0E00 retrieve results (31 03 0E 00)
-    let results_req = [0x31u8, 0x03, 0x0E, 0x00];
-    emit_log_simple(
-        app,
-        LogDirection::Tx,
-        &results_req,
-        "RoutineControl Request Results CCF (0x0E00)",
-    );
-    if let Ok(resp) = send_uds_request(app, channel, ecu_addr::IMC_TX, &results_req, true, emulator) {
-        if resp.len() > 4 {
-            let data = resp[4..].to_vec();
-            emit_log_simple(
-                app,
-                LogDirection::Rx,
-                &[],
-                &format!("IMC CCF Results: {} bytes", data.len()),
-            );
+    // Final fallback: DID reads on IMC
+    for did in [0xEE00u16, 0xDE00, 0xEE01, 0xEE70] {
+        if let Some(data) = read_ccf_block_did(app, channel, ecu_addr::IMC_TX, "IMC", did, emulator) {
             return Some(data);
         }
     }
 
-    // Fallback: try DID 0xEE00 on IMC itself
-    read_ccf_block_did(app, channel, ecu_addr::IMC_TX, "IMC", 0xEE00, emulator)
+    None
 }
 
 /// Compare CCF across GWM, BCM, and IMC.
