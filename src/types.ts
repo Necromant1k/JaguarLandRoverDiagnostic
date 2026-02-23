@@ -45,4 +45,4 @@ export interface BenchModeStatus {
   emulated_ecus: string[];
 }
 
-export type Tab = "connect" | "imc" | "bcm";
+export type Tab = "connect" | "imc" | "bcm" | "gwm" | "ipc";

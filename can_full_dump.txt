@@ -1,0 +1,77 @@
+============================================================
+VCX CAN Sniffer
+============================================================
+PassThruOpen: 0
+PassThruConnect CAN 500k: 0
+PassThruStartMsgFilter: 0 (filter_id=1)
+
+Sniffing CAN bus for 5 seconds...
+------------------------------------------------------------
+
+CAN IDs seen (64 unique):
+  0x030: 15 msgs
+  0x040: 11 msgs
+  0x050: 13 msgs
+  0x060: 4 msgs
+  0x070: 7 msgs
+  0x080: 7 msgs
+  0x090: 8 msgs
+  0x0A0: 4 msgs
+  0x0B0: 2 msgs
+  0x0C0: 16 msgs
+  0x0D0: 4 msgs
+  0x0E0: 3 msgs
+  0x100: 3 msgs
+  0x110: 7 msgs
+  0x130: 3 msgs
+  0x140: 7 msgs
+  0x148: 2 msgs
+  0x150: 5 msgs
+  0x154: 2 msgs
+  0x160: 6 msgs
+  0x170: 5 msgs
+  0x180: 2 msgs
+  0x190: 6 msgs
+  0x1B0: 2 msgs
+  0x1C0: 1 msgs
+  0x1D0: 2 msgs
+  0x1E0: 1 msgs
+  0x1F0: 8 msgs
+  0x200: 2 msgs
+  0x220: 3 msgs
+  0x238: 1 msgs
+  0x250: 2 msgs
+  0x260: 2 msgs
+  0x270: 1 msgs
+  0x280: 3 msgs
+  0x2A0: 2 msgs
+  0x2B0: 1 msgs
+  0x2C0: 1 msgs
+  0x2D0: 1 msgs
+  0x2E8: 1 msgs
+  0x2F0: 1 msgs
+  0x300: 1 msgs
+  0x308: 2 msgs
+  0x310: 1 msgs
+  0x315: 1 msgs
+  0x320: 1 msgs
+  0x328: 2 msgs
+  0x338: 1 msgs
+  0x340: 2 msgs
+  0x344: 1 msgs
+  0x34C: 1 msgs
+  0x350: 1 msgs
+  0x368: 1 msgs
+  0x370: 1 msgs
+  0x380: 1 msgs
+  0x388: 1 msgs
+  0x400: 2 msgs
+  0x405: 1 msgs
+  0x407: 1 msgs
+  0x448: 1 msgs
+  0x449: 1 msgs
+  0x460: 1 msgs
+  0x462: 1 msgs
+  0x511: 1 msgs
+
+Done

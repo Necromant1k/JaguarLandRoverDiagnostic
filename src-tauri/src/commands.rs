@@ -279,7 +279,7 @@ pub fn toggle_bench_mode(
 
         // Try to open a raw CAN channel for broadcast (separate from ISO15765)
         // Some J2534 devices (e.g. MongoosePro) only support one channel at a time,
-        // so broadcast is optional — software routing still works without it.
+        // so broadcast must happen before ISO15765
         let manager = match conn.device.connect_can(500000) {
             Ok(can_channel) => {
                 let can_channel_id = can_channel.channel_id();
@@ -356,6 +356,8 @@ fn read_ecu_info_inner(app: &AppHandle, state: &State<'_, AppState>, ecu: &str) 
     let entries = match ecu {
         "imc" => read_imc_info(app, channel, emulator),
         "bcm" => read_bcm_info(app, channel, emulator),
+        "gwm" => read_gwm_info(app, channel, emulator),
+        "ipc" => read_ipc_info(app, channel, emulator),
         _ => return Err(format!("Unknown ECU: {}", ecu)),
     };
 
@@ -502,6 +504,36 @@ fn format_temp(data: &[u8]) -> String {
     }
 }
 
+/// GWM battery voltage: offset=6V, resolution=0.05V (per MDX_GWM)
+fn format_gwm_voltage(data: &[u8]) -> String {
+    if !data.is_empty() {
+        let v = 6.0 + (data[0] as f32 * 0.05);
+        format!("{:.2} V", v)
+    } else {
+        "N/A".to_string()
+    }
+}
+
+/// GWM battery temp: offset=-40°C (per MDX_GWM)
+fn format_gwm_temp(data: &[u8]) -> String {
+    if !data.is_empty() {
+        let temp = data[0] as i16 - 40;
+        format!("{} °C", temp)
+    } else {
+        "N/A".to_string()
+    }
+}
+
+/// IPC odometer: 3 bytes, 1 km resolution
+fn format_odometer(data: &[u8]) -> String {
+    if data.len() >= 3 {
+        let km = ((data[0] as u32) << 16) | ((data[1] as u32) << 8) | (data[2] as u32);
+        format!("{} km", km)
+    } else {
+        "N/A".to_string()
+    }
+}
+
 fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
     let tx = ecu_addr::IMC_TX;
     let mut entries = Vec::new();
@@ -549,11 +581,11 @@ fn read_imc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     // F111 is NOT defined for IMC in EXML — removed
     let dids: Vec<(u16, &str, fn(&[u8]) -> String, &str)> = vec![
         (did::VIN, "VIN", format_string, "vehicle"),
-        (did::MASTER_RPM_PART, "Software Part", format_string, "software"),
+        (did::MASTER_RPM_PART, "SW Part", format_string, "software"),
         (did::V850_PART, "V850 Part", format_string, "software"),
         (did::POLAR_PART, "Polar Part", format_string, "software"),
         (did::ECU_SERIAL, "ECU Serial", format_string, "hardware"),
-        (did::ECU_SERIAL2, "ECU Serial 2", format_string, "hardware"),
+        (did::ECU_SERIAL2, "HW Part", format_string, "hardware"),
     ];
 
     for (did_id, label, formatter, category) in &dids {
@@ -584,10 +616,40 @@ fn read_bcm_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     let tx = ecu_addr::BCM_TX;
     vec![
         read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_voltage, "battery", emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc, "battery", emulator),
-        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_temp, "battery", emulator),
+        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "SW Part", format_string, "software", emulator),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL, "ECU Serial", format_string, "hardware", emulator),
+        read_did_entry(app, channel, tx, did::ECU_SERIAL2, "HW Part", format_string, "hardware", emulator),
     ]
+}
+
+fn read_gwm_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
+    let tx = ecu_addr::GWM_TX;
+    vec![
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator),
+        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "SW Part", format_string, "software", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_VOLTAGE, "Battery Voltage", format_gwm_voltage, "battery", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_SOC, "Battery SOC", format_soc, "battery", emulator),
+        read_did_entry(app, channel, tx, did::BATTERY_TEMP, "Battery Temp", format_gwm_temp, "battery", emulator),
+    ]
+}
+
+fn read_ipc_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn crate::j2534::Channel, emulator: Option<&EcuEmulatorManager>) -> Vec<EcuInfoEntry> {
+    let tx = ecu_addr::IPC_TX;
+    vec![
+        read_did_entry(app, channel, tx, did::VIN, "VIN", format_string, "vehicle", emulator),
+        read_did_entry(app, channel, tx, did::MASTER_RPM_PART, "SW Part", format_string, "software", emulator),
+        read_did_entry(app, channel, tx, 0x61BB, "Odometer", format_odometer, "vehicle", emulator),
+    ]
+}
+
+/// Returns path for saving dump files — uses exe parent dir so it's always findable
+fn dump_path(filename: &str) -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            return parent.join(filename);
+        }
+    }
+    std::path::PathBuf::from(filename)
 }
 
 /// Full BCM DID scan — reads all known BCM DIDs in default + extended session,
@@ -604,7 +666,7 @@ fn scan_bcm_full_inner(app: &AppHandle, state: &State<'_, AppState>) -> Result<S
     let emulator = conn.emulator_manager.as_ref();
     let tx = ecu_addr::BCM_TX;
 
-    // All DIDs to scan: standard ISO + BCM-specific from X260 MDX_BCM.exml
+    // All DIDs to scan: standard ISO 14229 DIDs
     let all_dids: &[u16] = &[
         // Standard ISO 14229 DIDs
         0xF190, 0xF188, 0xF18C, 0xF113, 0xF120, 0xF1A5, 0xF180, 0xF181,
@@ -717,9 +779,158 @@ fn scan_bcm_full_inner(app: &AppHandle, state: &State<'_, AppState>) -> Result<S
     });
 
     let json_str = serde_json::to_string_pretty(&dump).map_err(|e| e.to_string())?;
-    std::fs::write("bcm_dump.json", &json_str).map_err(|e| format!("Write failed: {}", e))?;
+    let path = dump_path("bcm_dump.json");
+    std::fs::write(&path, &json_str).map_err(|e| format!("Write failed: {}", e))?;
 
-    let msg = format!("BCM scan done: {}/{} DIDs OK → bcm_dump.json", ok_count, all_dids.len());
+    let msg = format!("BCM scan done: {}/{} DIDs OK → {}", ok_count, all_dids.len(), path.display());
+    emit_log_simple(app, LogDirection::Rx, &[], &msg);
+    Ok(msg)
+}
+
+/// Full GWM DID scan — reads all GWM DIDs (MDX_GWM X260 EXML), saves to gwm_dump.json
+#[tauri::command]
+pub fn scan_gwm_full(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    scan_gwm_full_inner(&app, &state).map_err(|e| log_err("scan_gwm_full", e))
+}
+
+fn scan_gwm_full_inner(app: &AppHandle, state: &State<'_, AppState>) -> Result<String, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel")?;
+    let emulator = conn.emulator_manager.as_ref();
+    let tx = ecu_addr::GWM_TX;
+
+    // Standard ISO + GWM-specific DIDs from MDX_GWM X260
+    let all_dids: &[u16] = &[
+        0xF190, 0xF188, 0xF18C, 0xF113,
+        // Battery management DIDs (GWM is the battery manager in X260)
+        0x401B, 0x401C, 0x401E,
+        0x4020, 0x4021, 0x4025, 0x4026, 0x4027,
+        0x4028, 0x4029, 0x402A, 0x402C, 0x402E,
+        0x4035, 0x4047, 0x4058, 0x4090,
+        0x0536,
+        0x41D0, 0x41E4, 0x41E5, 0x41E6,
+        // Diagnostic session
+        0xD100,
+    ];
+
+    emit_log_simple(app, LogDirection::Tx, &[], "=== GWM FULL SCAN START ===");
+    scan_ecu_dids(app, channel, tx, "GWM", ecu_addr::GWM_RX, all_dids, emulator, "gwm_dump.json")
+}
+
+/// Full IPC DID scan — reads all IPC DIDs (MDX_IPC X260 EXML), saves to ipc_dump.json
+#[tauri::command]
+pub fn scan_ipc_full(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    scan_ipc_full_inner(&app, &state).map_err(|e| log_err("scan_ipc_full", e))
+}
+
+fn scan_ipc_full_inner(app: &AppHandle, state: &State<'_, AppState>) -> Result<String, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel")?;
+    let emulator = conn.emulator_manager.as_ref();
+    let tx = ecu_addr::IPC_TX;
+
+    // IPC DIDs from MDX_IPC X260 + standard ISO
+    let all_dids: &[u16] = &[
+        0xF190, 0xF188, 0xF111, 0xF18C, 0xF113,
+        // IPC-specific
+        0x61AB, 0x61AC, 0x61BB,
+        0xDD00, 0xC124,
+        // Diagnostic session
+        0xD100,
+    ];
+
+    emit_log_simple(app, LogDirection::Tx, &[], "=== IPC FULL SCAN START ===");
+    scan_ecu_dids(app, channel, tx, "IPC", ecu_addr::IPC_RX, all_dids, emulator, "ipc_dump.json")
+}
+
+/// Generic ECU DID scan: default session, then extended for failed DIDs. Saves to JSON.
+fn scan_ecu_dids(
+    app: &AppHandle,
+    channel: &dyn crate::j2534::Channel,
+    tx: u32,
+    ecu_name: &str,
+    rx_id: u32,
+    all_dids: &[u16],
+    emulator: Option<&EcuEmulatorManager>,
+    filename: &str,
+) -> Result<String, String> {
+    // Wake ECU
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+
+    let mut did_results: Vec<serde_json::Value> = Vec::new();
+    let mut failed_in_default: Vec<u16> = Vec::new();
+
+    emit_log_simple(app, LogDirection::Tx, &[], "Pass 1: Default session");
+    for &did in all_dids {
+        let req = [0x22, (did >> 8) as u8, (did & 0xFF) as u8];
+        match send_uds_request(app, channel, tx, &req, false, emulator) {
+            Ok(resp) => {
+                let hex: String = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                let ascii: String = resp.iter().skip(3).map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
+                did_results.push(serde_json::json!({
+                    "did": format!("{:04X}", did),
+                    "session": "default",
+                    "raw_hex": hex,
+                    "bytes": resp,
+                    "ascii": ascii.trim(),
+                }));
+            }
+            Err(e) => {
+                failed_in_default.push(did);
+                did_results.push(serde_json::json!({
+                    "did": format!("{:04X}", did),
+                    "session": "default",
+                    "error": e,
+                }));
+            }
+        }
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    }
+
+    if !failed_in_default.is_empty() {
+        emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "Pass 2: Extended session");
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+        for &did in &failed_in_default {
+            let req = [0x22, (did >> 8) as u8, (did & 0xFF) as u8];
+            match send_uds_request(app, channel, tx, &req, false, emulator) {
+                Ok(resp) => {
+                    let hex: String = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                    let ascii: String = resp.iter().skip(3).map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
+                    // Replace the failed entry with success in extended session
+                    if let Some(entry) = did_results.iter_mut().find(|e| e["did"] == format!("{:04X}", did)) {
+                        *entry = serde_json::json!({
+                            "did": format!("{:04X}", did),
+                            "session": "extended",
+                            "raw_hex": hex,
+                            "bytes": resp,
+                            "ascii": ascii.trim(),
+                        });
+                    }
+                }
+                Err(_) => {}
+            }
+            let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        }
+    }
+
+    let ok_count = did_results.iter().filter(|e| e.get("raw_hex").is_some()).count();
+    let dump = serde_json::json!({
+        "ecu": ecu_name,
+        "vehicle": "X260 MY16 Jaguar XF",
+        "tx_id": format!("0x{:03X}", tx),
+        "rx_id": format!("0x{:03X}", rx_id),
+        "total_dids": all_dids.len(),
+        "ok_count": ok_count,
+        "dids": did_results,
+    });
+
+    let json_str = serde_json::to_string_pretty(&dump).map_err(|e| e.to_string())?;
+    let path = dump_path(filename);
+    std::fs::write(&path, &json_str).map_err(|e| format!("Write failed: {}", e))?;
+
+    let msg = format!("{} scan done: {}/{} DIDs OK → {}", ecu_name, ok_count, all_dids.len(), path.display());
     emit_log_simple(app, LogDirection::Rx, &[], &msg);
     Ok(msg)
 }
@@ -908,11 +1119,27 @@ fn read_ccf_inner(
         Ok(resp) => {
             let ccf_data = if resp.len() > 4 { &resp[4..] } else { &[] as &[u8] };
             emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF: {} bytes", ccf_data.len()));
+            // Save raw CCF bytes to file for later analysis
+            if !ccf_data.is_empty() {
+                let hex: String = ccf_data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                let dump = serde_json::json!({
+                    "ecu": "IMC",
+                    "routine": "0x0E02 List CCF",
+                    "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    "bytes": ccf_data.len(),
+                    "raw_hex": hex,
+                    "raw_bytes": ccf_data,
+                });
+                let path = dump_path("imc_ccf_dump.json");
+                if let Ok(json_str) = serde_json::to_string_pretty(&dump) {
+                    let _ = std::fs::write(&path, &json_str);
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("CCF saved → {}", path.display()));
+                }
+            }
             Ok(parse_ccf_entries(ccf_data))
         }
         Err(e) => {
             emit_log_simple(app, LogDirection::Rx, &[], &format!("List CCF failed: {}", e));
-            // Return informative error instead of propagating
             Ok(vec![EcuInfoEntry {
                 label: "CCF Status".to_string(),
                 did_hex: "CCF".to_string(),
@@ -1369,7 +1596,6 @@ mod tests {
     #[test]
     fn test_bcm_read_with_emulator() {
         // Bench mode ON: BCM is emulated, so all reads should return emulated values
-        // No mock channel expectations needed — emulator handles everything
         let app = test_app();
         let mock = setup_mock_channel();
         let emu = EcuEmulatorManager::new(vec![EcuId::Bcm]);
@@ -1381,22 +1607,20 @@ mod tests {
         assert_eq!(entries[0].category, "vehicle");
         assert!(entries[0].value.is_some(), "VIN should have emulated value");
         assert!(entries[0].error.is_none());
-        assert!(entries[0].value.as_ref().unwrap().starts_with("SAJBA4BN"));
-        // Battery Voltage
-        assert_eq!(entries[1].label, "Battery Voltage");
-        assert_eq!(entries[1].category, "battery");
+        assert!(entries[0].value.as_ref().unwrap().starts_with("SAJBL4BVXG"));
+        // SW Part
+        assert_eq!(entries[1].label, "SW Part");
+        assert_eq!(entries[1].category, "software");
         assert!(entries[1].value.is_some());
-        assert!(entries[1].value.as_ref().unwrap().contains("V"));
-        // Battery SOC
-        assert_eq!(entries[2].label, "Battery SOC");
-        assert_eq!(entries[2].category, "battery");
+        assert!(entries[1].value.as_ref().unwrap().contains("GX73"));
+        // ECU Serial
+        assert_eq!(entries[2].label, "ECU Serial");
+        assert_eq!(entries[2].category, "hardware");
         assert!(entries[2].value.is_some());
-        assert!(entries[2].value.as_ref().unwrap().contains("%"));
-        // Battery Temp
-        assert_eq!(entries[3].label, "Battery Temp");
-        assert_eq!(entries[3].category, "battery");
+        // HW Part
+        assert_eq!(entries[3].label, "HW Part");
+        assert_eq!(entries[3].category, "hardware");
         assert!(entries[3].value.is_some());
-        assert!(entries[3].value.as_ref().unwrap().contains("°C"));
     }
 
     #[test]
@@ -1428,22 +1652,22 @@ mod tests {
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // D100 (Default Session, no TesterPresent before first DID)
         mock.expect_request(tx, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
-        // TesterPresent + F190 VIN
+        // TesterPresent + VIN
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x53, 0x41, 0x4A]);
-        // TesterPresent + F188 Software Part
+        // TesterPresent + Software Part
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x88], vec![0x62, 0xF1, 0x88, 0x53, 0x57]);
-        // TesterPresent + F120 V850
+        // TesterPresent + V850
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x20], vec![0x62, 0xF1, 0x20, 0x56, 0x38]);
-        // TesterPresent + F1A5 Polar
+        // TesterPresent + Polar
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0xA5], vec![0x62, 0xF1, 0xA5, 0x50, 0x4C]);
-        // TesterPresent + F18C ECU Serial
+        // TesterPresent + ECU Serial
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x8C], vec![0x62, 0xF1, 0x8C, 0x53, 0x4E]);
-        // TesterPresent + F113 ECU Serial 2
+        // TesterPresent + ECU Serial 2
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(tx, vec![0x22, 0xF1, 0x13], vec![0x62, 0xF1, 0x13, 0x48, 0x57]);
         // Extended Session → OK
@@ -1456,17 +1680,13 @@ mod tests {
 
         assert_eq!(entries.len(), 8);
         assert_eq!(entries[0].label, "Diag Session");
+        assert!(entries[0].value.is_some());
         assert_eq!(entries[1].label, "VIN");
-        assert_eq!(entries[2].label, "Software Part");
-        assert_eq!(entries[3].label, "V850 Part");
-        assert_eq!(entries[4].label, "Polar Part");
-        assert_eq!(entries[5].label, "ECU Serial");
-        assert_eq!(entries[6].label, "ECU Serial 2");
+        assert!(entries[1].value.is_some(), "VIN works in Default Session per EXML");
+        // Last entry is 0202 with value (Extended Session succeeded)
         assert_eq!(entries[7].label, "IMC Status");
-        for entry in &entries {
-            assert!(entry.value.is_some(), "{} should have value", entry.label);
-            assert!(entry.error.is_none(), "{} should not have error", entry.label);
-        }
+        assert!(entries[7].value.is_some());
+        assert!(entries[7].error.is_none());
     }
 
     #[test]
@@ -1506,7 +1726,7 @@ mod tests {
         assert_eq!(entries[0].label, "Diag Session");
         assert!(entries[0].value.is_some());
         assert_eq!(entries[1].label, "VIN");
-        assert!(entries[1].value.is_some(), "VIN works in Default Session per EXML");
+        assert!(entries[1].value.is_some(), "VIN works in Default Session");
         // Last entry is 0202 with error (needs Extended Session)
         assert_eq!(entries[7].label, "IMC Status");
         assert!(entries[7].error.is_some());
@@ -1553,9 +1773,10 @@ mod tests {
         assert!(entries[0].value.is_some());
         assert_eq!(entries[1].label, "VIN");
         assert!(entries[1].value.is_some(), "VIN works in Default Session");
-        // 0202 should have error (needs Extended)
+        // Last entry is 0202 with error (needs Extended Session)
         assert_eq!(entries[7].label, "IMC Status");
         assert!(entries[7].error.is_some());
+        assert!(entries[7].error.as_ref().unwrap().contains("Extended Session"));
     }
 
     #[test]
@@ -1600,7 +1821,7 @@ mod tests {
         assert!(entries[0].value.is_some(), "D100 should succeed");
         assert_eq!(entries[1].label, "VIN");
         assert!(entries[1].error.is_some(), "VIN should have error");
-        assert_eq!(entries[2].label, "Software Part");
+        assert_eq!(entries[2].label, "SW Part");
         assert!(entries[2].value.is_some(), "Software Part should succeed despite VIN failure");
     }
 

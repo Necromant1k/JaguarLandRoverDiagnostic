@@ -73,6 +73,8 @@ pub fn run() {
             commands::list_routines,
             commands::export_logs,
             commands::scan_bcm_full,
+            commands::scan_gwm_full,
+            commands::scan_ipc_full,
         ])
         .setup(|_app| {
             log::info!("Tauri setup hook running");

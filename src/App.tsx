@@ -4,6 +4,8 @@ import Sidebar from "./components/Sidebar";
 import ConnectPanel from "./components/ConnectPanel";
 import ImcPanel from "./components/ImcPanel";
 import BcmPanel from "./components/BcmPanel";
+import GwmPanel from "./components/GwmPanel";
+import IpcPanel from "./components/IpcPanel";
 import LogConsole from "./components/LogConsole";
 import type { Tab, LogEntry, DeviceInfo } from "./types";
 
@@ -51,6 +53,10 @@ function App() {
         return <ImcPanel connected={connected} />;
       case "bcm":
         return <BcmPanel connected={connected} />;
+      case "gwm":
+        return <GwmPanel connected={connected} />;
+      case "ipc":
+        return <IpcPanel connected={connected} />;
     }
   };
 

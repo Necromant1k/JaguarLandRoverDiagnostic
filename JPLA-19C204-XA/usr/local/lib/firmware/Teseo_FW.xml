@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<firmwareManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="public/res/ias_firmware_manifest_schema.xsd">
+  <name>JLR-NGI Teseo Firmware update</name>
+  <version>0.1</version>
+  <description>Performs the Teseo update through the FlashTeseo script</description>
+  <installCommand>/opt/jlr/bin/DM/FlashTeseo.sh</installCommand>
+</firmwareManifest>

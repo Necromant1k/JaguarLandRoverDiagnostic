@@ -95,19 +95,56 @@ impl EcuHandler for BcmHandler {
             [0x11, reset_type, ..] => Some(vec![0x51, *reset_type]),
 
             // ReadDataByIdentifier (22 XX XX)
+            // Real car data captured 2026-02-23 from SAJBL4BVXGCY16353 (X260 MY16 Jaguar XF)
             [0x22, did_hi, did_lo, ..] => {
                 let did = ((*did_hi as u16) << 8) | (*did_lo as u16);
                 match did {
-                    0x402A => Some(vec![0x62, 0x40, 0x2A, 0x00, 0x7C]), // Voltage 12.4V
-                    0x4028 => Some(vec![0x62, 0x40, 0x28, 0x55]),       // SoC 85%
-                    0x4029 => Some(vec![0x62, 0x40, 0x29, 0x19]),       // Temp 25°C
-                    0x4030 => Some(vec![0x62, 0x40, 0x30, 0x00]),       // Door status: closed
-                    0x4032 => Some(vec![0x62, 0x40, 0x32, 0x4B]),       // Fuel level 75%
                     0xF190 => {
                         let mut resp = vec![0x62, 0xF1, 0x90];
-                        resp.extend_from_slice(b"SAJBA4BN0HA000000");
+                        resp.extend_from_slice(b"SAJBL4BVXGCY16353");
                         Some(resp)
                     }
+                    0xF188 => {
+                        // SW part number (24 bytes, null-padded)
+                        let mut resp = vec![0x62, 0xF1, 0x88];
+                        let mut part = b"GX73-14C184-AK".to_vec();
+                        part.resize(24, 0x00);
+                        resp.extend_from_slice(&part);
+                        Some(resp)
+                    }
+                    0xF18C => {
+                        let mut resp = vec![0x62, 0xF1, 0x8C];
+                        resp.extend_from_slice(b"1979149808");
+                        Some(resp)
+                    }
+                    0xF113 => {
+                        // HW part number (24 bytes, null-padded)
+                        let mut resp = vec![0x62, 0xF1, 0x13];
+                        let mut part = b"GX73-14F041-AK".to_vec();
+                        part.resize(24, 0x00);
+                        resp.extend_from_slice(&part);
+                        Some(resp)
+                    }
+                    0x40AB => Some(vec![0x62, 0x40, 0xAB, 0x04]),
+                    0x40DE => Some(vec![0x62, 0x40, 0xDE, 0x01]),
+                    0x41DD => Some(vec![0x62, 0x41, 0xDD, 0x00]),
+                    0xA112 => Some(vec![0x62, 0xA1, 0x12, 0x1F, 0xFF, 0xFF, 0x1F]),
+                    0xC124 => Some(vec![0x62, 0xC1, 0x24, 0x6C, 0x04, 0x6C, 0x04]),
+                    0xC190 => Some(vec![0x62, 0xC1, 0x90, 0x80, 0x00, 0x7D, 0x6C]),
+                    0xD134 => Some(vec![0x62, 0xD1, 0x34, 0x00]),
+                    0xDD01 => Some(vec![0x62, 0xDD, 0x01, 0x03, 0x5F, 0xB8]),
+                    0xDD06 => Some(vec![0x62, 0xDD, 0x06, 0x67]),
+                    0xDE02 => {
+                        let mut resp = vec![0x62, 0xDE, 0x02];
+                        resp.extend_from_slice(&[0xFF; 8]);
+                        Some(resp)
+                    }
+                    0xDE03 => {
+                        let mut resp = vec![0x62, 0xDE, 0x03];
+                        resp.extend_from_slice(&[0xFF; 8]);
+                        Some(resp)
+                    }
+                    // Battery DIDs (402A/4028/4029) are on GWM, not BCM — return 0x31
                     _ => Some(vec![0x7F, 0x22, 0x31]), // requestOutOfRange
                 }
             }
@@ -413,38 +450,39 @@ mod tests {
     }
 
     #[test]
-    fn test_bcm_handler_voltage() {
+    fn test_bcm_handler_voltage_returns_nrc() {
+        // Real BCM returns 0x31 for 402A — battery data is on GWM
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0x40, 0x2A]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x2A, 0x00, 0x7C]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
-    fn test_bcm_handler_soc() {
+    fn test_bcm_handler_soc_returns_nrc() {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0x40, 0x28]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x28, 0x55]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
-    fn test_bcm_handler_temp() {
+    fn test_bcm_handler_temp_returns_nrc() {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0x40, 0x29]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x29, 0x19]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
-    fn test_bcm_handler_door_status() {
+    fn test_bcm_handler_door_status_returns_nrc() {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0x40, 0x30]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x30, 0x00]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
-    fn test_bcm_handler_fuel_level() {
+    fn test_bcm_handler_fuel_level_returns_nrc() {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0x40, 0x32]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x32, 0x4B]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
@@ -453,7 +491,34 @@ mod tests {
         let resp = handler.build_response(&[0x22, 0xF1, 0x90]).unwrap();
         assert_eq!(resp[0], 0x62);
         let vin = String::from_utf8_lossy(&resp[3..]);
-        assert_eq!(vin, "SAJBA4BN0HA000000");
+        assert_eq!(vin, "SAJBL4BVXGCY16353");
+    }
+
+    #[test]
+    fn test_bcm_handler_sw_part() {
+        let handler = BcmHandler;
+        let resp = handler.build_response(&[0x22, 0xF1, 0x88]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        let part = String::from_utf8_lossy(&resp[3..]).trim_matches('\0').to_string();
+        assert_eq!(part.trim(), "GX73-14C184-AK");
+    }
+
+    #[test]
+    fn test_bcm_handler_ecu_serial() {
+        let handler = BcmHandler;
+        let resp = handler.build_response(&[0x22, 0xF1, 0x8C]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        let serial = String::from_utf8_lossy(&resp[3..]);
+        assert_eq!(serial, "1979149808");
+    }
+
+    #[test]
+    fn test_bcm_handler_hw_part() {
+        let handler = BcmHandler;
+        let resp = handler.build_response(&[0x22, 0xF1, 0x13]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        let part = String::from_utf8_lossy(&resp[3..]).trim_matches('\0').to_string();
+        assert_eq!(part.trim(), "GX73-14F041-AK");
     }
 
     #[test]
@@ -578,18 +643,19 @@ mod tests {
         let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0xF1, 0x90]).unwrap();
         assert_eq!(resp[0], 0x62);
         let vin = String::from_utf8_lossy(&resp[3..]);
-        assert_eq!(vin, "SAJBA4BN0HA000000");
+        assert_eq!(vin, "SAJBL4BVXGCY16353");
     }
 
     #[test]
-    fn test_try_handle_bcm_voltage() {
+    fn test_try_handle_bcm_voltage_returns_nrc() {
+        // Battery voltage is on GWM, not BCM — emulator returns 0x31
         let mgr = EcuEmulatorManager {
             running: Arc::new(AtomicBool::new(false)),
             handle: None,
             emulated_ecus: vec![EcuId::Bcm],
         };
         let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0x40, 0x2A]).unwrap();
-        assert_eq!(resp, vec![0x62, 0x40, 0x2A, 0x00, 0x7C]);
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
     #[test]
