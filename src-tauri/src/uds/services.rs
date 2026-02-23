@@ -65,7 +65,10 @@ pub const ROUTINE_RESULTS: u8 = 0x03;
 
 // ─── Diagnostic Session Control (0x10) ──────────────────────────────
 
-pub fn diagnostic_session<C: Channel>(client: &UdsClient<C>, session: DiagSession) -> Result<Vec<u8>, UdsError> {
+pub fn diagnostic_session<C: Channel>(
+    client: &UdsClient<C>,
+    session: DiagSession,
+) -> Result<Vec<u8>, UdsError> {
     let request = vec![0x10, session as u8];
     client.send_recv(&request, 2000, false)
 }
@@ -89,7 +92,9 @@ pub fn read_did<C: Channel>(client: &UdsClient<C>, did_id: u16) -> Result<Vec<u8
     let response = client.send_recv(&request, 2000, false)?;
     // Response: 0x62 DID_HI DID_LO DATA...
     if response.len() < 3 {
-        return Err(UdsError::InvalidResponse("ReadDID response too short".into()));
+        return Err(UdsError::InvalidResponse(
+            "ReadDID response too short".into(),
+        ));
     }
     Ok(response)
 }
@@ -107,7 +112,10 @@ pub fn read_vin<C: Channel>(client: &UdsClient<C>) -> Result<String, UdsError> {
 }
 
 /// Read a part number DID and return as string
-pub fn read_part_number<C: Channel>(client: &UdsClient<C>, did_id: u16) -> Result<String, UdsError> {
+pub fn read_part_number<C: Channel>(
+    client: &UdsClient<C>,
+    did_id: u16,
+) -> Result<String, UdsError> {
     let data = read_did_data(client, did_id)?;
     Ok(String::from_utf8_lossy(&data).trim().to_string())
 }
@@ -131,7 +139,10 @@ pub fn read_battery_voltage<C: Channel>(client: &UdsClient<C>) -> Result<f32, Ud
 // ─── SecurityAccess (0x27) ──────────────────────────────────────────
 
 /// Request security seed from ECU
-pub fn security_request_seed<C: Channel>(client: &UdsClient<C>, level: u8) -> Result<Vec<u8>, UdsError> {
+pub fn security_request_seed<C: Channel>(
+    client: &UdsClient<C>,
+    level: u8,
+) -> Result<Vec<u8>, UdsError> {
     let request = vec![0x27, level];
     let response = client.send_recv(&request, 2000, false)?;
     // Response: 0x67 LEVEL SEED[0..N]
@@ -144,7 +155,11 @@ pub fn security_request_seed<C: Channel>(client: &UdsClient<C>, level: u8) -> Re
 }
 
 /// Send security key to ECU
-pub fn security_send_key<C: Channel>(client: &UdsClient<C>, level: u8, key: &[u8]) -> Result<Vec<u8>, UdsError> {
+pub fn security_send_key<C: Channel>(
+    client: &UdsClient<C>,
+    level: u8,
+    key: &[u8],
+) -> Result<Vec<u8>, UdsError> {
     let mut request = vec![0x27, level];
     request.extend_from_slice(key);
     client.send_recv(&request, 2000, false)
@@ -258,14 +273,22 @@ pub enum ResetType {
     SoftReset = 0x03,
 }
 
-pub fn ecu_reset<C: Channel>(client: &UdsClient<C>, reset_type: ResetType) -> Result<Vec<u8>, UdsError> {
+pub fn ecu_reset<C: Channel>(
+    client: &UdsClient<C>,
+    reset_type: ResetType,
+) -> Result<Vec<u8>, UdsError> {
     let request = vec![0x11, reset_type as u8];
     client.send_recv(&request, 2000, false)
 }
 
 // ─── Routine 0x6038 decode ──────────────────────────────────────────
 
-fn describe_routine_result(routine_id: u16, status: Option<u8>, result: Option<u8>, error: Option<u8>) -> String {
+fn describe_routine_result(
+    routine_id: u16,
+    status: Option<u8>,
+    result: Option<u8>,
+    error: Option<u8>,
+) -> String {
     match routine_id {
         0x6038 => describe_6038(status, result, error),
         0x0404 => describe_0404(status),
@@ -315,14 +338,30 @@ fn describe_6038(status: Option<u8>, result: Option<u8>, error: Option<u8>) -> S
 
     if let Some(e) = error {
         let mut errors = vec![];
-        if e & 0x01 != 0 { errors.push("Boot parameter"); }
-        if e & 0x02 != 0 { errors.push("Symlinks"); }
-        if e & 0x04 != 0 { errors.push("Start-up configuration XML"); }
-        if e & 0x08 != 0 { errors.push("Manifest symlinks"); }
-        if e & 0x10 != 0 { errors.push("DVD region"); }
-        if e & 0x20 != 0 { errors.push("Polar switch"); }
-        if e & 0x40 != 0 { errors.push("Gracenotes"); }
-        if e & 0x80 != 0 { errors.push("Application manager LCF"); }
+        if e & 0x01 != 0 {
+            errors.push("Boot parameter");
+        }
+        if e & 0x02 != 0 {
+            errors.push("Symlinks");
+        }
+        if e & 0x04 != 0 {
+            errors.push("Start-up configuration XML");
+        }
+        if e & 0x08 != 0 {
+            errors.push("Manifest symlinks");
+        }
+        if e & 0x10 != 0 {
+            errors.push("DVD region");
+        }
+        if e & 0x20 != 0 {
+            errors.push("Polar switch");
+        }
+        if e & 0x40 != 0 {
+            errors.push("Gracenotes");
+        }
+        if e & 0x80 != 0 {
+            errors.push("Application manager LCF");
+        }
         if !errors.is_empty() {
             parts.push(format!("Errors: {}", errors.join(", ")));
         } else if e == 0 {
@@ -402,7 +441,10 @@ pub fn enable_ssh<C: Channel>(client: &UdsClient<C>) -> Result<SshResult, UdsErr
     Ok(SshResult {
         success: true,
         ip_address: "192.168.103.11".to_string(),
-        message: format!("SSH ENABLED — Connect: root@192.168.103.11 | {}", result.description),
+        message: format!(
+            "SSH ENABLED — Connect: root@192.168.103.11 | {}",
+            result.description
+        ),
     })
 }
 
@@ -413,12 +455,14 @@ mod tests {
     use crate::uds::error::NegativeResponseCode;
 
     fn make_imc_client(mock: MockChannel) -> UdsClient<MockChannel> {
-        mock.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX).unwrap();
+        mock.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX)
+            .unwrap();
         UdsClient::new(mock, ecu_addr::IMC_TX, ecu_addr::IMC_RX)
     }
 
     fn make_bcm_client(mock: MockChannel) -> UdsClient<MockChannel> {
-        mock.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX).unwrap();
+        mock.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX)
+            .unwrap();
         UdsClient::new(mock, ecu_addr::BCM_TX, ecu_addr::BCM_RX)
     }
 
@@ -427,7 +471,11 @@ mod tests {
     #[test]
     fn test_session_default() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x01], vec![0x50, 0x01, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x01],
+            vec![0x50, 0x01, 0x00, 0x19, 0x01, 0xF4],
+        );
         let client = make_imc_client(mock);
         let resp = diagnostic_session(&client, DiagSession::Default).unwrap();
         assert_eq!(resp[0], 0x50);
@@ -437,7 +485,11 @@ mod tests {
     #[test]
     fn test_session_extended() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         let client = make_imc_client(mock);
         let resp = diagnostic_session(&client, DiagSession::Extended).unwrap();
         assert_eq!(resp[0], 0x50);
@@ -447,7 +499,11 @@ mod tests {
     #[test]
     fn test_session_programming() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x02], vec![0x50, 0x02, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x02],
+            vec![0x50, 0x02, 0x00, 0x19, 0x01, 0xF4],
+        );
         let client = make_imc_client(mock);
         let resp = diagnostic_session(&client, DiagSession::Programming).unwrap();
         assert_eq!(resp[0], 0x50);
@@ -586,7 +642,11 @@ mod tests {
     #[test]
     fn test_read_did_d100_session() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x22, 0xD1, 0x00], vec![0x62, 0xD1, 0x00, 0x01]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x22, 0xD1, 0x00],
+            vec![0x62, 0xD1, 0x00, 0x01],
+        );
         let client = make_imc_client(mock);
         let data = read_did_data(&client, did::ACTIVE_DIAG_SESSION).unwrap();
         assert_eq!(data, vec![0x01]); // default session
@@ -595,7 +655,11 @@ mod tests {
     #[test]
     fn test_read_did_0202_status() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x22, 0x02, 0x02], vec![0x62, 0x02, 0x02, 0xAA]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x22, 0x02, 0x02],
+            vec![0x62, 0x02, 0x02, 0xAA],
+        );
         let client = make_imc_client(mock);
         let data = read_did_data(&client, did::IMC_STATUS).unwrap();
         assert_eq!(data, vec![0xAA]);
@@ -605,7 +669,11 @@ mod tests {
     fn test_read_did_402a_voltage() {
         let mock = MockChannel::new();
         // 0x007C = 124 → 12.4V
-        mock.expect_request(ecu_addr::BCM_TX, vec![0x22, 0x40, 0x2A], vec![0x62, 0x40, 0x2A, 0x00, 0x7C]);
+        mock.expect_request(
+            ecu_addr::BCM_TX,
+            vec![0x22, 0x40, 0x2A],
+            vec![0x62, 0x40, 0x2A, 0x00, 0x7C],
+        );
         let client = make_bcm_client(mock);
         let voltage = read_battery_voltage(&client).unwrap();
         assert!((voltage - 12.4).abs() < 0.01);
@@ -614,7 +682,11 @@ mod tests {
     #[test]
     fn test_read_did_4028_soc() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::BCM_TX, vec![0x22, 0x40, 0x28], vec![0x62, 0x40, 0x28, 0x55]);
+        mock.expect_request(
+            ecu_addr::BCM_TX,
+            vec![0x22, 0x40, 0x28],
+            vec![0x62, 0x40, 0x28, 0x55],
+        );
         let client = make_bcm_client(mock);
         let data = read_did_data(&client, did::BATTERY_SOC).unwrap();
         assert_eq!(data, vec![0x55]); // 85% SoC
@@ -623,7 +695,11 @@ mod tests {
     #[test]
     fn test_read_did_4029_temp() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::BCM_TX, vec![0x22, 0x40, 0x29], vec![0x62, 0x40, 0x29, 0x19]);
+        mock.expect_request(
+            ecu_addr::BCM_TX,
+            vec![0x22, 0x40, 0x29],
+            vec![0x62, 0x40, 0x29, 0x19],
+        );
         let client = make_bcm_client(mock);
         let data = read_did_data(&client, did::BATTERY_TEMP).unwrap();
         assert_eq!(data, vec![0x19]); // 25°C
@@ -632,7 +708,11 @@ mod tests {
     #[test]
     fn test_read_did_not_supported() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x22, 0xFF, 0xFF], vec![0x7F, 0x22, 0x31]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x22, 0xFF, 0xFF],
+            vec![0x7F, 0x22, 0x31],
+        );
         let client = make_imc_client(mock);
         let err = read_did(&client, 0xFFFF).unwrap_err();
         match err {
@@ -649,7 +729,11 @@ mod tests {
     #[test]
     fn test_security_seed_request() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x11, 0x22, 0x33],
+        );
         let client = make_imc_client(mock);
         let resp = security_request_seed(&client, 0x11).unwrap();
         assert_eq!(resp[0], 0x67);
@@ -660,7 +744,11 @@ mod tests {
     #[test]
     fn test_security_key_send_ok() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x12, 0xAA, 0xBB, 0xCC], vec![0x67, 0x12]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x12, 0xAA, 0xBB, 0xCC],
+            vec![0x67, 0x12],
+        );
         let client = make_imc_client(mock);
         let resp = security_send_key(&client, 0x12, &[0xAA, 0xBB, 0xCC]).unwrap();
         assert_eq!(resp, vec![0x67, 0x12]);
@@ -669,7 +757,11 @@ mod tests {
     #[test]
     fn test_security_key_invalid() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x12, 0x00, 0x00, 0x00], vec![0x7F, 0x27, 0x35]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x12, 0x00, 0x00, 0x00],
+            vec![0x7F, 0x27, 0x35],
+        );
         let client = make_imc_client(mock);
         let err = security_send_key(&client, 0x12, &[0x00, 0x00, 0x00]).unwrap_err();
         match err {
@@ -712,7 +804,11 @@ mod tests {
     fn test_security_full_flow() {
         let mock = MockChannel::new();
         // Seed request → seed response
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x11, 0x22, 0x33],
+        );
         // Compute key for seed 0x112233 with DC0314 constants
         let seed_int = 0x112233u32;
         let key_int = keygen::keygen_mki(seed_int, &keygen::DC0314_CONSTANTS);
@@ -732,7 +828,11 @@ mod tests {
     #[test]
     fn test_security_zero_seed_already_unlocked() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x00, 0x00, 0x00]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x00, 0x00, 0x00],
+        );
         let client = make_imc_client(mock);
         let unlocked = security_access(&client, 0x11, 0x12, &keygen::DC0314_CONSTANTS).unwrap();
         assert!(!unlocked); // false = was already unlocked
@@ -789,7 +889,7 @@ mod tests {
             ecu_addr::IMC_TX,
             vec![0x31, 0x01, 0x60, 0x3E, 0x01],
             vec![
-                vec![0x7F, 0x31, 0x78], // pending
+                vec![0x7F, 0x31, 0x78],       // pending
                 vec![0x71, 0x01, 0x60, 0x3E], // OK
             ],
         );
@@ -801,7 +901,11 @@ mod tests {
     #[test]
     fn test_routine_603f_dvd_recover() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x3F], vec![0x71, 0x01, 0x60, 0x3F]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x3F],
+            vec![0x71, 0x01, 0x60, 0x3F],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::DVD_RECOVER, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x603F);
@@ -810,7 +914,11 @@ mod tests {
     #[test]
     fn test_routine_6041_fan_control() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x41], vec![0x71, 0x01, 0x60, 0x41]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x41],
+            vec![0x71, 0x01, 0x60, 0x41],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::FAN_CONTROL, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x6041);
@@ -819,7 +927,11 @@ mod tests {
     #[test]
     fn test_routine_6042_reset_pin() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x42], vec![0x71, 0x01, 0x60, 0x42]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x42],
+            vec![0x71, 0x01, 0x60, 0x42],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::RESET_PIN, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x6042);
@@ -828,7 +940,11 @@ mod tests {
     #[test]
     fn test_routine_6043_power_override() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x43], vec![0x71, 0x01, 0x60, 0x43]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x43],
+            vec![0x71, 0x01, 0x60, 0x43],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::POWER_OVERRIDE, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x6043);
@@ -837,7 +953,11 @@ mod tests {
     #[test]
     fn test_routine_6045_gen_key() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x45], vec![0x71, 0x01, 0x60, 0x45]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x45],
+            vec![0x71, 0x01, 0x60, 0x45],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::GEN_KEY, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x6045);
@@ -846,7 +966,11 @@ mod tests {
     #[test]
     fn test_routine_6046_shared_secret() {
         let mock = MockChannel::new();
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x31, 0x01, 0x60, 0x46], vec![0x71, 0x01, 0x60, 0x46]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x31, 0x01, 0x60, 0x46],
+            vec![0x71, 0x01, 0x60, 0x46],
+        );
         let client = make_imc_client(mock);
         let result = routine_start(&client, routine::SHARED_SECRET, &[], false).unwrap();
         assert_eq!(result.routine_id, 0x6046);
@@ -936,9 +1060,15 @@ mod tests {
         let err = routine_start(&client, routine::SSH_ENABLE, &[0x01], false).unwrap_err();
         match err {
             UdsError::NegativeResponse { nrc, .. } => {
-                assert_eq!(nrc, NegativeResponseCode::SubFunctionNotSupportedInActiveSession);
+                assert_eq!(
+                    nrc,
+                    NegativeResponseCode::SubFunctionNotSupportedInActiveSession
+                );
             }
-            other => panic!("Expected SubFunctionNotSupportedInActiveSession, got {:?}", other),
+            other => panic!(
+                "Expected SubFunctionNotSupportedInActiveSession, got {:?}",
+                other
+            ),
         }
     }
 
@@ -979,9 +1109,17 @@ mod tests {
         // TesterPresent
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended session
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         // Security seed
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x11, 0x22, 0x33],
+        );
         // Security key (computed)
         let seed_int = 0x112233u32;
         let key_int = keygen::keygen_mki(seed_int, &keygen::DC0314_CONSTANTS);
@@ -1011,7 +1149,11 @@ mod tests {
     fn test_ssh_enable_security_fails() {
         let mock = MockChannel::new();
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         // Security seed fails
         mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x7F, 0x27, 0x36]);
 
@@ -1029,14 +1171,22 @@ mod tests {
     fn test_ssh_enable_pending_handling() {
         let mock = MockChannel::new();
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x00, 0x00, 0x00]); // already unlocked
-        // SSH routine with pending
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x00, 0x00, 0x00],
+        ); // already unlocked
+           // SSH routine with pending
         mock.expect_request_multi(
             ecu_addr::IMC_TX,
             vec![0x31, 0x01, 0x60, 0x3E, 0x01],
             vec![
-                vec![0x7F, 0x31, 0x78], // pending
+                vec![0x7F, 0x31, 0x78],       // pending
                 vec![0x71, 0x01, 0x60, 0x3E], // OK
             ],
         );
@@ -1050,9 +1200,17 @@ mod tests {
     fn test_ssh_enable_routine_fails() {
         let mock = MockChannel::new();
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x00, 0x00, 0x00]); // already unlocked
-        // SSH routine rejected
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x00, 0x00, 0x00],
+        ); // already unlocked
+           // SSH routine rejected
         mock.expect_request(
             ecu_addr::IMC_TX,
             vec![0x31, 0x01, 0x60, 0x3E, 0x01],
@@ -1077,9 +1235,17 @@ mod tests {
         // TesterPresent
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended session
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         // Security seed
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x67, 0x11, 0x11, 0x22, 0x33]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x27, 0x11],
+            vec![0x67, 0x11, 0x11, 0x22, 0x33],
+        );
         // Security key (computed)
         let seed_int = 0x112233u32;
         let key_int = keygen::keygen_mki(seed_int, &keygen::DC0314_CONSTANTS);
@@ -1099,7 +1265,8 @@ mod tests {
         );
 
         let client = make_imc_client(mock);
-        let result = execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap();
+        let result =
+            execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap();
         assert_eq!(result.routine_id, 0x603D);
     }
 
@@ -1109,7 +1276,11 @@ mod tests {
         // TesterPresent
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended session
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         // NO security step — goes straight to routine
         mock.expect_request(
             ecu_addr::IMC_TX,
@@ -1129,12 +1300,17 @@ mod tests {
         // TesterPresent
         mock.expect_request(ecu_addr::IMC_TX, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         // Extended session
-        mock.expect_request(ecu_addr::IMC_TX, vec![0x10, 0x03], vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4]);
+        mock.expect_request(
+            ecu_addr::IMC_TX,
+            vec![0x10, 0x03],
+            vec![0x50, 0x03, 0x00, 0x19, 0x01, 0xF4],
+        );
         // Security seed fails — exceeded attempts
         mock.expect_request(ecu_addr::IMC_TX, vec![0x27, 0x11], vec![0x7F, 0x27, 0x36]);
 
         let client = make_imc_client(mock);
-        let err = execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap_err();
+        let err =
+            execute_routine_sdd(&client, routine::ENG_SCREEN_LVL2, &[], true, false).unwrap_err();
         match err {
             UdsError::NegativeResponse { nrc, .. } => {
                 assert_eq!(nrc, NegativeResponseCode::ExceededNumberOfAttempts);

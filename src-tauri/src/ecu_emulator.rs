@@ -159,9 +159,7 @@ impl EcuHandler for BcmHandler {
             [0x2E, did_hi, did_lo, ..] => Some(vec![0x6E, *did_hi, *did_lo]),
 
             // RoutineControl (31 XX XX XX)
-            [0x31, sub_fn, rid_hi, rid_lo, ..] => {
-                Some(vec![0x71, *sub_fn, *rid_hi, *rid_lo])
-            }
+            [0x31, sub_fn, rid_hi, rid_lo, ..] => Some(vec![0x71, *sub_fn, *rid_hi, *rid_lo]),
 
             // Unknown service → NRC serviceNotSupported
             [sid, ..] => Some(vec![0x7F, *sid, 0x11]),
@@ -350,9 +348,7 @@ impl EcuEmulatorManager {
                 msg.data_size = 12; // 4 bytes CAN ID + 8 bytes data
 
                 let mut num_msgs: u32 = 1;
-                let _ = unsafe {
-                    (fns.write_msgs)(can_channel_id, &msg, &mut num_msgs, 50)
-                };
+                let _ = unsafe { (fns.write_msgs)(can_channel_id, &msg, &mut num_msgs, 50) };
             }
 
             // ~100ms cycle matches typical CAN bus timing
@@ -499,7 +495,9 @@ mod tests {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0xF1, 0x88]).unwrap();
         assert_eq!(resp[0], 0x62);
-        let part = String::from_utf8_lossy(&resp[3..]).trim_matches('\0').to_string();
+        let part = String::from_utf8_lossy(&resp[3..])
+            .trim_matches('\0')
+            .to_string();
         assert_eq!(part.trim(), "GX73-14C184-AK");
     }
 
@@ -517,7 +515,9 @@ mod tests {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0xF1, 0x13]).unwrap();
         assert_eq!(resp[0], 0x62);
-        let part = String::from_utf8_lossy(&resp[3..]).trim_matches('\0').to_string();
+        let part = String::from_utf8_lossy(&resp[3..])
+            .trim_matches('\0')
+            .to_string();
         assert_eq!(part.trim(), "GX73-14F041-AK");
     }
 
@@ -640,7 +640,9 @@ mod tests {
             handle: None,
             emulated_ecus: vec![EcuId::Bcm],
         };
-        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0xF1, 0x90]).unwrap();
+        let resp = mgr
+            .try_handle(ecu_addr::BCM_TX, &[0x22, 0xF1, 0x90])
+            .unwrap();
         assert_eq!(resp[0], 0x62);
         let vin = String::from_utf8_lossy(&resp[3..]);
         assert_eq!(vin, "SAJBL4BVXGCY16353");
@@ -654,7 +656,9 @@ mod tests {
             handle: None,
             emulated_ecus: vec![EcuId::Bcm],
         };
-        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0x40, 0x2A]).unwrap();
+        let resp = mgr
+            .try_handle(ecu_addr::BCM_TX, &[0x22, 0x40, 0x2A])
+            .unwrap();
         assert_eq!(resp, vec![0x7F, 0x22, 0x31]);
     }
 
@@ -677,7 +681,9 @@ mod tests {
             handle: None,
             emulated_ecus: vec![EcuId::Bcm],
         };
-        let resp = mgr.try_handle(ecu_addr::BCM_TX, &[0x22, 0xFF, 0xFF]).unwrap();
+        let resp = mgr
+            .try_handle(ecu_addr::BCM_TX, &[0x22, 0xFF, 0xFF])
+            .unwrap();
         assert_eq!(resp, vec![0x7F, 0x22, 0x31]); // NRC requestOutOfRange
     }
 }

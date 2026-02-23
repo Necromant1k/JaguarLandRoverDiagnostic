@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
-use crate::j2534::Channel;
 use crate::j2534::types::*;
+use crate::j2534::Channel;
 
 /// A single expected request → response pair
 #[derive(Debug, Clone)]
@@ -101,21 +101,22 @@ impl Channel for MockChannel {
         let can_id = msg.can_id();
         let payload = msg.payload().to_vec();
 
-        self.sent_messages.borrow_mut().push((can_id, payload.clone()));
+        self.sent_messages
+            .borrow_mut()
+            .push((can_id, payload.clone()));
 
         // Match against expectations
         let mut expectations = self.expectations.borrow_mut();
-        if let Some(pos) = expectations.iter().position(|e| {
-            e.tx_id == can_id && e.expected_request == payload
-        }) {
+        if let Some(pos) = expectations
+            .iter()
+            .position(|e| e.tx_id == can_id && e.expected_request == payload)
+        {
             let exp = expectations.remove(pos).unwrap();
             let rx_id = self.rx_id_for_tx(can_id);
 
             // Queue all responses
             for resp in exp.responses {
-                self.pending_responses
-                    .borrow_mut()
-                    .push_back((rx_id, resp));
+                self.pending_responses.borrow_mut().push_back((rx_id, resp));
             }
         }
         // If no expectation matches and not in timeout mode, that's OK —
@@ -181,7 +182,11 @@ mod tests {
         // IMC request
         mock.expect_request(0x7B3, vec![0x22, 0xF1, 0x90], vec![0x62, 0xF1, 0x90, 0x41]);
         // BCM request
-        mock.expect_request(0x726, vec![0x22, 0x40, 0x2A], vec![0x62, 0x40, 0x2A, 0x00, 0x7C]);
+        mock.expect_request(
+            0x726,
+            vec![0x22, 0x40, 0x2A],
+            vec![0x62, 0x40, 0x2A, 0x00, 0x7C],
+        );
 
         // Send IMC
         let tx1 = PassThruMsg::new_iso15765(0x7B3, &[0x22, 0xF1, 0x90]);
@@ -209,7 +214,7 @@ mod tests {
             0x7B3,
             vec![0x31, 0x01, 0x60, 0x3E, 0x01],
             vec![
-                vec![0x7F, 0x31, 0x78], // pending
+                vec![0x7F, 0x31, 0x78],       // pending
                 vec![0x71, 0x01, 0x60, 0x3E], // OK
             ],
         );
@@ -269,7 +274,7 @@ mod tests {
         assert_eq!(msg.protocol_id, PROTOCOL_ISO15765);
         assert_eq!(msg.tx_flags, ISO15765_FRAME_PAD);
         assert_eq!(msg.data_size, 7); // 4 header + 3 payload
-        // Header: 0x000007B3
+                                      // Header: 0x000007B3
         assert_eq!(&msg.data[0..4], &[0x00, 0x00, 0x07, 0xB3]);
         // Payload
         assert_eq!(&msg.data[4..7], &[0x22, 0xF1, 0x90]);

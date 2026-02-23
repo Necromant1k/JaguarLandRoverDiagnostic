@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use crate::j2534::Channel;
 use crate::j2534::types::PassThruMsg;
+use crate::j2534::Channel;
 use crate::uds::error::{NegativeResponseCode, UdsError};
 
 /// Log entry direction
@@ -129,11 +129,7 @@ impl<C: Channel> UdsClient<C> {
                         continue;
                     }
 
-                    self.log(
-                        LogDirection::Error,
-                        payload,
-                        &format!("NRC: {}", nrc),
-                    );
+                    self.log(LogDirection::Error, payload, &format!("NRC: {}", nrc));
                     return Err(UdsError::NegativeResponse {
                         service_id: resp_service,
                         nrc,
@@ -164,11 +160,7 @@ impl<C: Channel> UdsClient<C> {
 
     /// Send without expecting a response (e.g., TesterPresent with suppressResponse)
     pub fn send_no_response(&self, request: &[u8]) -> Result<(), UdsError> {
-        self.log(
-            LogDirection::Tx,
-            request,
-            &describe_service(request[0]),
-        );
+        self.log(LogDirection::Tx, request, &describe_service(request[0]));
         let msg = PassThruMsg::new_iso15765(self.tx_id, request);
         self.channel
             .send(&msg, 2000)
@@ -239,7 +231,9 @@ mod tests {
         );
         let client = make_client(mock);
 
-        let err = client.send_recv(&[0x22, 0xFF, 0xFF], 2000, false).unwrap_err();
+        let err = client
+            .send_recv(&[0x22, 0xFF, 0xFF], 2000, false)
+            .unwrap_err();
         match err {
             UdsError::NegativeResponse { service_id, nrc } => {
                 assert_eq!(service_id, 0x22);
@@ -256,7 +250,7 @@ mod tests {
             0x7B3,
             vec![0x31, 0x01, 0x60, 0x3E, 0x01],
             vec![
-                vec![0x7F, 0x31, 0x78], // pending
+                vec![0x7F, 0x31, 0x78],       // pending
                 vec![0x71, 0x01, 0x60, 0x3E], // OK
             ],
         );
@@ -292,7 +286,9 @@ mod tests {
         mock.set_timeout_mode(true);
         let client = make_client(mock);
 
-        let err = client.send_recv(&[0x22, 0xF1, 0x90], 200, false).unwrap_err();
+        let err = client
+            .send_recv(&[0x22, 0xF1, 0x90], 200, false)
+            .unwrap_err();
         assert!(matches!(err, UdsError::Timeout));
     }
 
@@ -309,7 +305,9 @@ mod tests {
 
         // The client should see 0x50 but expect 0x62 — it will log but timeout
         // since there's no matching positive response
-        let err = client.send_recv(&[0x22, 0xF1, 0x90], 200, false).unwrap_err();
+        let err = client
+            .send_recv(&[0x22, 0xF1, 0x90], 200, false)
+            .unwrap_err();
         assert!(matches!(err, UdsError::Timeout));
     }
 }

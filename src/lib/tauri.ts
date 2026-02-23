@@ -6,6 +6,7 @@ import type {
   RoutineResponse,
   J2534DeviceEntry,
   BenchModeStatus,
+  CcfCompareEntry,
 } from "../types";
 
 export async function discoverDevices(): Promise<J2534DeviceEntry[]> {
@@ -59,4 +60,8 @@ export async function listRoutines(): Promise<RoutineInfo[]> {
 
 export async function exportLogs(): Promise<string> {
   return invoke<string>("export_logs");
+}
+
+export async function compareCcf(): Promise<CcfCompareEntry[]> {
+  return invoke<CcfCompareEntry[]>("compare_ccf");
 }

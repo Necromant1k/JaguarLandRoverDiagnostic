@@ -1,0 +1,819 @@
+{
+  "1": {
+    "id": 1,
+    "name": "Doors",
+    "group": "GROUP_CCF_EUCD_DOORS",
+    "values": {
+      "2": "5_DR",
+      "3": "4_DR",
+      "4": "2 door",
+      "5": "3_DR"
+    }
+  },
+  "2": {
+    "id": 2,
+    "name": "Transmission Driveline",
+    "group": "GROUP_CCF_EUCD_TRANSMISSION_DRIVELINE",
+    "values": {
+      "0": "UNDEF",
+      "1": "2WD",
+      "2": "AWD"
+    }
+  },
+  "3": {
+    "id": 3,
+    "name": "Bifuel",
+    "group": "GROUP_CCF_EUCD_BIFUEL",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_BIFUEL",
+      "2": "LPG",
+      "3": "CNG"
+    }
+  },
+  "4": {
+    "id": 4,
+    "name": "Engine",
+    "group": "GROUP_CCF_EUCD_ENGINE",
+    "values": {
+      "0": "UNDEF",
+      "144": "3.0L diesel V6 engine",
+      "154": "AJ126 V6 S/C 3.0L",
+      "155": "AJ200D 2.0 litre",
+      "156": "AJ200P 2.0 litre",
+      "171": "GTDi"
+    }
+  },
+  "6": {
+    "id": 6,
+    "name": "Alternator",
+    "group": "GROUP_CCF_EUCD_ALTERNATOR",
+    "values": {
+      "0": "UNDEF",
+      "1": "AJ126",
+      "2": "GTDI",
+      "3": "220A",
+      "4": "120A",
+      "5": "150A",
+      "12": "230A",
+      "13": "180A"
+    }
+  },
+  "7": {
+    "id": 7,
+    "name": "ITP_01",
+    "group": "GROUP_ITP_01",
+    "values": {}
+  },
+  "8": {
+    "id": 8,
+    "name": "Gearbox",
+    "group": "GROUP_CCF_EUCD_GEARBOX",
+    "values": {
+      "1": "Manual 6-speed FWD",
+      "74": "8 speed automatic"
+    }
+  },
+  "9": {
+    "id": 9,
+    "name": "Gearbox Type",
+    "group": "GROUP_CCF_EUCD_GEARBOX_TYPE",
+    "values": {
+      "0": "UNDEF",
+      "1": "MAN",
+      "2": "AUTO"
+    }
+  },
+  "10": {
+    "id": 10,
+    "name": "Fuel Tank Volume",
+    "group": "GROUP_CCF_EUCD_FUEL_TANK_VOLUME",
+    "values": {
+      "0": "UNDEF",
+      "1": "70L",
+      "2": "80L",
+      "3": "68L",
+      "4": "75L",
+      "5": "72L",
+      "6": "60L",
+      "7": "108L"
+    }
+  },
+  "11": {
+    "id": 11,
+    "name": "Alarm",
+    "group": "GROUP_CCF_EUCD_ALARM",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_ALARM",
+      "2": "ALARM",
+      "3": "ALARM_NO_CAT_1",
+      "4": "Alarm CAT 1 (Thatcham alarm)"
+    }
+  },
+  "14": {
+    "id": 14,
+    "name": "ITP_02",
+    "group": "GROUP_ITP_02",
+    "values": {}
+  },
+  "15": {
+    "id": 15,
+    "name": "Dayrunning Light",
+    "group": "GROUP_CCF_EUCD_DAYRUNNING_LIGHT",
+    "values": {
+      "0": "UNDEF",
+      "1": "Always dipped light except in position 'P'",
+      "2": "Standard dipped light - adjustable to Zero/DIP (Non-DTRL)",
+      "3": "Dipped light in all positions",
+      "4": "User configurable dipped light in position '0'",
+      "5": "Dedicated day running light lamp in position '0' and 'POS'",
+      "6": "User configurable dedicated day running light lamp in position '0' and 'POS'"
+    }
+  },
+  "16": {
+    "id": 16,
+    "name": "Headlights Dimmed Dipped",
+    "group": "GROUP_CCF_EUCD_HEADLIGHTS_DIMMED_DIPPED",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_DIPPED_HEADLIGHTS",
+      "2": "DIPPED_HEADLIGHTS"
+    }
+  },
+  "17": {
+    "id": 17,
+    "name": "Foglight Function",
+    "group": "GROUP_CCF_EUCD_FOGLIGHT_FUNCTION",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_FOGLIGHT",
+      "2": "FOGLIGHT",
+      "3": "FOGLIGHT_NO_HIGH_BEAM"
+    }
+  },
+  "18": {
+    "id": 18,
+    "name": "Rear Foglight Tow Function",
+    "group": "GROUP_CCF_EUCD_REAR_FOGLIGHT_TOW_FUNCTION",
+    "values": {
+      "0": "UNDEF",
+      "1": "Rear fog lamps on when the trailer is present",
+      "2": "Rear fog lamps off when the trailer is present"
+    }
+  },
+  "19": {
+    "id": 19,
+    "name": "Trailer Module",
+    "group": "GROUP_CCF_EUCD_TRAILER_MODULE",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_TRAILER_MODULE",
+      "2": "TRAILER_7_FOGS",
+      "3": "TRAILER_7_REVERSE",
+      "4": "TRAILER_7_PSU",
+      "5": "TRAILER_13",
+      "6": "TRAILER_4",
+      "7": "TRAILER_7_N_PIN_7",
+      "8": "TRAILER_7_US"
+    }
+  },
+  "21": {
+    "id": 21,
+    "name": "ITP_03",
+    "group": "GROUP_ITP_03",
+    "values": {}
+  },
+  "22": {
+    "id": 22,
+    "name": "Cruise Control",
+    "group": "GROUP_CCF_EUCD_CRUISE_CONTROL",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_CC",
+      "2": "CC",
+      "3": "ACC",
+      "4": "ACC_STOP_GO",
+      "6": "ACC_BRAKE_2",
+      "7": "ACC_STOP_GO_BRAKE_2"
+    }
+  },
+  "23": {
+    "id": 23,
+    "name": "Rainsensor",
+    "group": "GROUP_CCF_EUCD_RAINSENSOR",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_RAIN_SENSE",
+      "2": "RAIN_SENSE"
+    }
+  },
+  "25": {
+    "id": 25,
+    "name": "Power Steering Type",
+    "group": "GROUP_CCF_EUCD_POWER_STEERING_TYPE",
+    "values": {
+      "0": "UNDEF",
+      "7": "Electric power steering without external angle or torque control",
+      "8": "Electric power steering with external angle control only",
+      "9": "Electric power steering with external torque control only",
+      "10": "Electric power steering with external angle and torque control"
+    }
+  },
+  "27": {
+    "id": 27,
+    "name": "Private Locking Trunk",
+    "group": "GROUP_CCF_EUCD_PRIVATE_LOCKING_TRUNK",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_PRIV_TRUNK",
+      "2": "PRIV_TRUNK"
+    }
+  },
+  "29": {
+    "id": 29,
+    "name": "Unlock setting",
+    "group": "GROUP_EUCD_CCF_UNLOCK_SETTING",
+    "values": {
+      "0": "UNDEF",
+      "1": "One step opening",
+      "2": "Two step opening",
+      "3": "One step opening with slam lock",
+      "4": "Two step opening with slam lock",
+      "5": "Two step opening with cargo slam lock and cabin reverse cycling"
+    }
+  },
+  "30": {
+    "id": 30,
+    "name": "Acknowledge signal lock/alarm",
+    "group": "GROUP_CCF_EUCD_ACKNOWLEDGE_SIGNAL_LOCK_ALARM",
+    "values": {
+      "0": "UNDEF",
+      "1": "Lock acknowledge (no unlock)",
+      "2": "Lock/unlock acknowledge"
+    }
+  },
+  "31": {
+    "id": 31,
+    "name": "Automatic locking by speed",
+    "group": "GROUP_CCF_EUCD_AUTOMATIC_LOCKING_BY_SPEED",
+    "values": {
+      "0": "UNDEF",
+      "1": "Without automatic locking",
+      "2": "Automatic locking"
+    }
+  },
+  "32": {
+    "id": 32,
+    "name": "Level Sensor If Alarm",
+    "group": "GROUP_CCF_EUCD_LEVEL_SENSOR_IF_ALARM",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_LEVEL_SENSOR",
+      "2": "LEVEL_SENSOR"
+    }
+  },
+  "33": {
+    "id": 33,
+    "name": "Key Lock Protect",
+    "group": "GROUP_CCF_EUCD_KEY_LOCK_PROTECT",
+    "values": {
+      "0": "UNDEF",
+      "1": "OFF",
+      "3": "Exterior scan for key adjacent to tailgate post closure",
+      "4": "Exterior scan for key prior/post to tailgate closure"
+    }
+  },
+  "34": {
+    "id": 34,
+    "name": "Key Lock Prot Int",
+    "group": "GROUP_CCF_EUCD_KEY_LOCK_PROT_INT",
+    "values": {
+      "0": "OFF",
+      "3": "Interior scan for any key in vehicle"
+    }
+  },
+  "35": {
+    "id": 35,
+    "name": "ITP_05",
+    "group": "GROUP_ITP_05",
+    "values": {}
+  },
+  "36": {
+    "id": 36,
+    "name": "Side object detection - Blind spot information system",
+    "group": "GROUP_CCF_EUCD_BLIND_SPOT_INFORMATION_SYSTEM",
+    "values": {
+      "0": "UNDEF",
+      "1": "Without side object (blind spot) detection system",
+      "3": "Side object (blind spot) detection system with radar 'Direct LED'",
+      "6": "Side object detect with rear traffic detection"
+    }
+  },
+  "65": {
+    "id": 65,
+    "name": "Roof Type",
+    "group": "GROUP_CCF_EUCD_ROOF_TYPE",
+    "values": {
+      "0": "UNDEF",
+      "1": "STANDARD",
+      "2": "PANORAMA"
+    }
+  },
+  "67": {
+    "id": 67,
+    "name": "Emission Standard",
+    "group": "GROUP_CCF_EUCD_EMISSION_STANDARD",
+    "values": {
+      "0": "UNDEF",
+      "1": "2000 EEC stage III (Car)",
+      "2": "2000 EEC stage III (LDT)",
+      "3": "97 EEC LDT",
+      "4": "96 EEC car/96 EEC M1 (stage III)",
+      "5": "95 EEC LDT",
+      "6": "93 EEC car (Turkish 91/441/EEC)",
+      "7": "LDT stage II",
+      "8": "Mexico requirements",
+      "9": "87 US diesel/83 US",
+      "16": "D3",
+      "17": "D4",
+      "18": "Stage IV",
+      "19": "Stage V diesel",
+      "20": "EUR 1504",
+      "21": "LEV",
+      "22": "ULEV requirements",
+      "23": "US 49 states",
+      "24": "California",
+      "25": "Light duty truck Stage 4 requirement"
+    }
+  },
+  "68": {
+    "id": 68,
+    "name": "Body Style",
+    "group": "GROUP_CCF_EUCD_BODY_STYLE",
+    "values": {
+      "0": "UNDEF",
+      "51": "4 door sedan 6-lite",
+      "52": "4 door sedan stretch 6-lite"
+    }
+  },
+  "69": {
+    "id": 69,
+    "name": "Tyre Dimension",
+    "group": "GROUP_CCF_EUCD_TYRE_DIMENSION",
+    "values": {
+      "0": "UNDEF",
+      "1": "X260",
+      "44": "225/45 R18",
+      "156": "205/55 R17",
+      "157": "225/50 R17 or 225/55 R17",
+      "158": "225/40 R19",
+      "160": "235/35 R20 or 265/30 R20"
+    }
+  },
+  "70": {
+    "id": 70,
+    "name": "ITP_10",
+    "group": "GROUP_ITP_10",
+    "values": {}
+  },
+  "71": {
+    "id": 71,
+    "name": "Navigation Traveller Assistance",
+    "group": "GROUP_CCF_EUCD_NAVIGATION_TRAVELLER_ASSISTANCE",
+    "values": {
+      "0": "UNDEF",
+      "1": "n_NAV",
+      "5": "NAV_HI",
+      "6": "OFF BOARD NAVIGATION ACCESSORY",
+      "8": "NAV_MMM2"
+    }
+  },
+  "72": {
+    "id": 72,
+    "name": "RCM CCF Assembly Part Number 01",
+    "group": "GROUP_CCF_ASSEMBLY_PN_RCM",
+    "values": {}
+  },
+  "73": {
+    "id": 73,
+    "name": "Suspension",
+    "group": "GROUP_CCF_EUCD_SUSPENSION",
+    "values": {
+      "0": "UNDEF",
+      "1": "STD",
+      "2": "SPORT",
+      "3": "INC_RIDE_HEIGHT",
+      "5": "COIL",
+      "6": "ASUS_2_CORNER",
+      "7": "ASUS_4_CORNER"
+    }
+  },
+  "77": {
+    "id": 77,
+    "name": "ITP_11",
+    "group": "GROUP_ITP_11",
+    "values": {}
+  },
+  "79": {
+    "id": 79,
+    "name": "Wheelbase Series",
+    "group": "GROUP_CCF_EUCD_WHEELBASE_SERIES",
+    "values": {
+      "0": "UNDEF",
+      "1": "0_8S",
+      "2": "1_0S",
+      "3": "1_0M",
+      "4": "1_3S",
+      "5": "1_3M",
+      "6": "1_5S",
+      "7": "1_5M",
+      "8": "1_5L",
+      "9": "1_3L",
+      "16": "1_7M",
+      "17": "1_9EF",
+      "18": "1_7L",
+      "19": "1_7EF",
+      "20": "1_9M",
+      "21": "1_9L"
+    }
+  },
+  "80": {
+    "id": 80,
+    "name": "Active Suspension",
+    "group": "GROUP_CCF_EUCD_ACTIVE_SUSPENSION",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_CONT_CTRL",
+      "2": "CONT_CTRL"
+    }
+  },
+  "81": {
+    "id": 81,
+    "name": "Steering Gear",
+    "group": "GROUP_CCF_EUCD_STEERING_GEAR",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_SPEED_SENSITIVE",
+      "2": "SPEED_SENSITIVE"
+    }
+  },
+  "82": {
+    "id": 82,
+    "name": "Central Lock Type",
+    "group": "GROUP_CCF_EUCD_CENTRAL_LOCK_TYPE",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_BURGLARPROOF",
+      "2": "BURGLARPROOF",
+      "4": "MANUAL"
+    }
+  },
+  "83": {
+    "id": 83,
+    "name": "Side Windows",
+    "group": "GROUP_CCF_EUCD_SIDE_WINDOWS",
+    "values": {
+      "0": "UNDEF",
+      "1": "TEMPERED",
+      "2": "LAMINATED"
+    }
+  },
+  "84": {
+    "id": 84,
+    "name": "ITP_12",
+    "group": "GROUP_ITP_12",
+    "values": {}
+  },
+  "86": {
+    "id": 86,
+    "name": "Puddle Light Outer Mirrors",
+    "group": "GROUP_CCF_EUCD_PUDDLE_LIGHT_OUTER_MIRRORS",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_PUDDLE_LIGHT",
+      "2": "PUDDLE_LIGHT",
+      "3": "PUDDLE_LIGHT_DRV",
+      "4": "PUDDLE_LIGHT_PASS"
+    }
+  },
+  "87": {
+    "id": 87,
+    "name": "Auto Lights",
+    "group": "GROUP_CCF_EUCD_AUTO_LIGHTS",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_AUTO_LIGHT",
+      "2": "AUTO_LIGHT",
+      "3": "AUTO_LIGHT"
+    }
+  },
+  "88": {
+    "id": 88,
+    "name": "Airbag Passenger Side",
+    "group": "GROUP_CCF_EUCD_AIRBAG_PASSENGER_SIDE",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_PASSENGER_AIRBAG",
+      "2": "PASSENGER_AIRBAG"
+    }
+  },
+  "89": {
+    "id": 89,
+    "name": "Cutoff Switch Passenger Airbag",
+    "group": "GROUP_CCF_EUCD_CUTOFF_SWITCH_PASSENGER_AIRBAG",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_PASSENGER_AIRBAG_CUTOFF",
+      "2": "PASSENGER_AIRBAG_CUTOFF"
+    }
+  },
+  "90": {
+    "id": 90,
+    "name": "Side Airbag Thorax Driver",
+    "group": "GROUP_CCF_EUCD_SIDE_AIRBAG_THORAX_DRIVER",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_SIDE_AIRBAG_DRIVER",
+      "2": "SIDE_AIRBAG_DRIVER"
+    }
+  },
+  "91": {
+    "id": 91,
+    "name": "ITP_13",
+    "group": "GROUP_ITP_13",
+    "values": {}
+  },
+  "92": {
+    "id": 92,
+    "name": "Language",
+    "group": "GROUP_CCF_EUCD_LANGUAGE",
+    "values": {
+      "0": "UNDEF",
+      "1": "SWEDISH",
+      "2": "DANISH",
+      "3": "FINNISH",
+      "4": "ENGLISH",
+      "5": "GERMAN",
+      "6": "DUTCH",
+      "7": "FRENCH",
+      "8": "ITALIAN",
+      "9": "SPANISH",
+      "16": "PORTUGUESE",
+      "17": "US_ENGLISH",
+      "18": "CANADIAN_FRENCH",
+      "19": "JAPANESE",
+      "20": "PORTUGUESE_BRAZIL",
+      "21": "ENGLISH_WITH_NUMBER_CODES",
+      "22": "HUNGARIAN",
+      "23": "TURKISH",
+      "24": "RUSSIAN",
+      "25": "POLISH",
+      "32": "CZECH",
+      "33": "NORWEGIAN",
+      "34": "LATIN_SPANISH",
+      "35": "AUTRALIAN_ENGLISH",
+      "36": "THAI",
+      "37": "FORD_ASIA_PACIFIC_ENGLISH",
+      "38": "CHINESE"
+    }
+  },
+  "93": {
+    "id": 93,
+    "name": "El Car Heater",
+    "group": "GROUP_CCF_EUCD_EL_CAR_HEATER",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_EL_HEATER",
+      "2": "EL_HEATER_TIME",
+      "3": "EL_HEATER_N_TIMER"
+    }
+  },
+  "94": {
+    "id": 94,
+    "name": "Cupe Ventilation",
+    "group": "GROUP_CCF_EUCD_CUPE_VENTILATION",
+    "values": {
+      "0": "NOT_USED",
+      "8": "RESERVED"
+    }
+  },
+  "95": {
+    "id": 95,
+    "name": "Collision Mitigation By Braking",
+    "group": "GROUP_CCF_EUCD_COLLISION_MITIGATION_BY_BRAKING",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_CMBYB",
+      "2": "CMBYB_GEN_1",
+      "3": "CMBYB_GEN_2",
+      "4": "CMBYB_GEN_1_LEV_2",
+      "5": "CMBYB_GEN_2_LEV_2",
+      "6": "Collision mitigation by braking GEN 3",
+      "7": "Collision mitigation by braking GEN 3 Level 2"
+    }
+  },
+  "96": {
+    "id": 96,
+    "name": "Forward Collision Warning",
+    "group": "GROUP_CCF_EUCD_FORWARD_COLLISION_WARNING",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_COLLISION_WARN",
+      "2": "COLLISION_WARN_GEN_1",
+      "3": "COLLISION_WARN_GEN_2",
+      "4": "Forward collision warning GEN 3"
+    }
+  },
+  "97": {
+    "id": 97,
+    "name": "Lane Departure Warning",
+    "group": "GROUP_CCF_EUCD_LANE_DEPARTURE_WARNING",
+    "values": {
+      "0": "UNDEF",
+      "17": "No lane departure warning or traffic sign recognition",
+      "19": "No lane departure warning with traffic sign recognition",
+      "81": "Lane departure warning not traffic sign recognition",
+      "83": "Lane departure warning and traffic sign recognition"
+    }
+  },
+  "98": {
+    "id": 98,
+    "name": "ITP_14",
+    "group": "GROUP_ITP_14",
+    "values": {}
+  },
+  "99": {
+    "id": 99,
+    "name": "12 Volt Outlet Luggage",
+    "group": "GROUP_CCF_EUCD_12_VOLT_OUTLET_LUGGAGE",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_LUGGAGE_12V_OUTLET",
+      "2": "LUGGAGE_12V_OUTLET"
+    }
+  },
+  "100": {
+    "id": 100,
+    "name": "Tyre Pressure Mode System",
+    "group": "GROUP_CCF_EUCD_TYRE_PRESSURE_MODE_SYSTEM",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_TPMS",
+      "137": "TPMS With WBL, No HSPA, No WT, No DLS (NAS Legislation)",
+      "153": "TPMS With WBL, DLS, No HSPA, No WT (NAS Legislation",
+      "162": "TPMS With WBL, WT, No HSPA, No DLS (EU Legislation)",
+      "163": "TPMS With WBL, No HSPA, No WT, No DLS (EU Legislation)",
+      "164": "TPMS With WBL, DLS, HSPA and No WT (EU Legislation)",
+      "165": "TPMS With WBL, DLS, HSPA and WT (EU Legislation)",
+      "166": "TPMS With WBL, DLS, WT and No HSPA (EU Legislation)",
+      "167": "TPMS With WBL, DLS, No HSPA and No WT (EU Legislation)",
+      "168": "TPMS With WBL, DLS (Heavy Default), HSPA and No WT US",
+      "169": "TPMS With WBL, DLS (Heavy Default), HSPA and WT US",
+      "176": "TPMS With WBL, DLS (Heavy Default) and WT and No HSPA US",
+      "177": "TPMS With WBL, DLS (Heavy Default) and No HSPA and No WT US"
+    }
+  },
+  "101": {
+    "id": 101,
+    "name": "Oil Level Sensor",
+    "group": "GROUP_CCF_EUCD_OIL_LEVEL_SENSOR",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_OIL_LEVEL_SENSE",
+      "2": "OIL_LEVEL_SENSE",
+      "3": "Oil level sensor and static measurement"
+    }
+  },
+  "102": {
+    "id": 102,
+    "name": "Roll Stability Control",
+    "group": "GROUP_CCF_EUCD_ROLL_STABILITY_CONTROL",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_ROLL_STABILITY",
+      "2": "ROLL_STABILITY"
+    }
+  },
+  "105": {
+    "id": 105,
+    "name": "ITP_15",
+    "group": "GROUP_ITP_15",
+    "values": {}
+  },
+  "107": {
+    "id": 107,
+    "name": "Roof Hatch",
+    "group": "GROUP_CCF_EUCD_ROOF_HATCH",
+    "values": {
+      "0": "UNDEF",
+      "1": "ROOF_HATCH",
+      "2": "N_ROOF_HATCH"
+    }
+  },
+  "108": {
+    "id": 108,
+    "name": "Powered rear windows",
+    "group": "GROUP_CCF_EUCD_POWER_REAR_WINDOWS",
+    "values": {
+      "0": "UNDEF",
+      "1": "Manually operated rear windows",
+      "2": "Powered rear windows",
+      "3": "Powered windows not fitted (front / rear)"
+    }
+  },
+  "109": {
+    "id": 109,
+    "name": "Audio unit (radio) band/frequency setting",
+    "group": "GROUP_CCF_EUCD_FREQUENCY_BAND_AND_STEP_RADIO",
+    "values": {
+      "1": "Frequency band and step for EU",
+      "2": "Frequency band and step for USA",
+      "3": "Frequency band and step for Australia",
+      "4": "Frequency band and step for Japan",
+      "5": "Frequency band and step for Gulf countries and Thailand"
+    }
+  },
+  "110": {
+    "id": 110,
+    "name": "Trim Level",
+    "group": "GROUP_CCF_EUCD_TRIM_LEVEL",
+    "values": {
+      "0": "UNDEF",
+      "1": "CLOTH",
+      "2": "LEATHER",
+      "3": "PART_LEATHER"
+    }
+  },
+  "111": {
+    "id": 111,
+    "name": "In car entertainment",
+    "group": "GROUP_CCF_EUCD_IN_CAR_ENTERTAINMENT",
+    "values": {
+      "2": "Low level tape + AM/FM radio"
+    }
+  },
+  "112": {
+    "id": 112,
+    "name": "Voice Control",
+    "group": "GROUP_CCF_EUCD_VOICE_CONTROL",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_VOICE",
+      "3": "ADV_SPEECH",
+      "4": "VOICE"
+    }
+  },
+  "113": {
+    "id": 113,
+    "name": "Speedo Bias",
+    "group": "GROUP_CCF_EUCD_SPEEDO_BIAS",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_SPEEDO_BIAS",
+      "2": "SPEED_BIAS"
+    }
+  },
+  "114": {
+    "id": 114,
+    "name": "Speed Lock",
+    "group": "GROUP_CCF_EUCD_SPEED_LOCK",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_SPEED_LOCK",
+      "2": "SPEED_LOCK"
+    }
+  },
+  "116": {
+    "id": 116,
+    "name": "Speedometer",
+    "group": "GROUP_CCF_EUCD_SPEEDOMETER",
+    "values": {
+      "0": "UNDEF",
+      "1": "KPH",
+      "2": "MPH"
+    }
+  },
+  "117": {
+    "id": 117,
+    "name": "Tachograph",
+    "group": "GROUP_CCF_EUCD_TACHOGRAPH",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_TACHOGRAPH",
+      "2": "TACHOGRAPH_24HR",
+      "3": "TACHOGRAPH_DIGITAL"
+    }
+  },
+  "119": {
+    "id": 119,
+    "name": "Centre Speaker Dashboard",
+    "group": "GROUP_CCF_EUCD_CENTRE_SPEAKER_DASHBOARD",
+    "values": {
+      "0": "UNDEF",
+      "1": "N_CENTRE_SPEAKER",
+      "2": "CENTRE_SPEAKER_SMALL",
+      "3": "CENTRE_SPEAKER_LARGE"
+    }
+  }
+}

@@ -1,5 +1,5 @@
-pub mod ecu_emulator;
 pub mod commands;
+pub mod ecu_emulator;
 pub mod j2534;
 pub mod state;
 pub mod uds;
@@ -9,9 +9,8 @@ use state::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging — write to stderr + file (C:\udsapp\udsapp.log on Windows)
-    let mut builder = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("debug")
-    );
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
     builder.format_timestamp_millis();
 
     // Also write logs to file
@@ -75,6 +74,7 @@ pub fn run() {
             commands::scan_bcm_full,
             commands::scan_gwm_full,
             commands::scan_ipc_full,
+            commands::compare_ccf,
         ])
         .setup(|_app| {
             log::info!("Tauri setup hook running");

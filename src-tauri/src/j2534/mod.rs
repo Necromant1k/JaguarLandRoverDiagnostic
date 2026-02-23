@@ -1,8 +1,8 @@
-pub mod types;
-pub mod dll;
 pub mod device;
+pub mod dll;
 #[cfg(test)]
 pub mod mock;
+pub mod types;
 
 use types::PassThruMsg;
 

@@ -46,3 +46,12 @@ export interface BenchModeStatus {
 }
 
 export type Tab = "connect" | "imc" | "bcm" | "gwm" | "ipc";
+
+export interface CcfCompareEntry {
+  option_id: number;
+  name: string;
+  gwm: string | null;
+  bcm: string | null;
+  imc: string | null;
+  mismatch: boolean;
+}

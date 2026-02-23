@@ -45,7 +45,10 @@ impl J2534Device {
         }
         Ok(DeviceVersion {
             firmware: String::from_utf8_lossy(
-                &firmware[..firmware.iter().position(|&b| b == 0).unwrap_or(firmware.len())],
+                &firmware[..firmware
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(firmware.len())],
             )
             .to_string(),
             dll: String::from_utf8_lossy(
@@ -136,11 +139,7 @@ pub struct J2534Channel {
 
 impl J2534Channel {
     /// Set up ISO15765 flow control filter for ECU communication
-    pub fn setup_iso15765_filter(
-        &self,
-        tx_id: u32,
-        rx_id: u32,
-    ) -> Result<u32, String> {
+    pub fn setup_iso15765_filter(&self, tx_id: u32, rx_id: u32) -> Result<u32, String> {
         let mut mask = PassThruMsg::default();
         mask.protocol_id = PROTOCOL_ISO15765;
         mask.data_size = 4;
@@ -229,9 +228,18 @@ impl J2534Channel {
     /// Set ISO15765 flow control parameters via IOCTL SET_CONFIG
     pub fn set_iso15765_config(&self, bs: u32, stmin: u32, wft_max: u32) -> Result<(), String> {
         let mut configs = [
-            SConfig { parameter: ISO15765_BS, value: bs },
-            SConfig { parameter: ISO15765_STMIN, value: stmin },
-            SConfig { parameter: ISO15765_WFT_MAX, value: wft_max },
+            SConfig {
+                parameter: ISO15765_BS,
+                value: bs,
+            },
+            SConfig {
+                parameter: ISO15765_STMIN,
+                value: stmin,
+            },
+            SConfig {
+                parameter: ISO15765_WFT_MAX,
+                value: wft_max,
+            },
         ];
         let config_list = SConfigList {
             num_of_params: 3,

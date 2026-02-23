@@ -10,8 +10,14 @@ type PassThruConnectFn = unsafe extern "system" fn(u32, u32, u32, u32, *mut u32)
 type PassThruDisconnectFn = unsafe extern "system" fn(u32) -> u32;
 type PassThruReadMsgsFn = unsafe extern "system" fn(u32, *mut PassThruMsg, *mut u32, u32) -> u32;
 type PassThruWriteMsgsFn = unsafe extern "system" fn(u32, *const PassThruMsg, *mut u32, u32) -> u32;
-type PassThruStartMsgFilterFn =
-    unsafe extern "system" fn(u32, u32, *const PassThruMsg, *const PassThruMsg, *const PassThruMsg, *mut u32) -> u32;
+type PassThruStartMsgFilterFn = unsafe extern "system" fn(
+    u32,
+    u32,
+    *const PassThruMsg,
+    *const PassThruMsg,
+    *const PassThruMsg,
+    *mut u32,
+) -> u32;
 type PassThruStopMsgFilterFn = unsafe extern "system" fn(u32, u32) -> u32;
 type PassThruIoctlFn = unsafe extern "system" fn(u32, u32, *const c_void, *mut c_void) -> u32;
 type PassThruReadVersionFn = unsafe extern "system" fn(u32, *mut u8, *mut u8, *mut u8) -> u32;
@@ -98,8 +104,14 @@ pub fn discover_j2534_dlls() -> Vec<(String, PathBuf)> {
 
     // Search both registry views — 32-bit and 64-bit
     let registry_paths = [
-        (r"SOFTWARE\PassThruSupport.04.04", KEY_READ | KEY_WOW64_64KEY),
-        (r"SOFTWARE\PassThruSupport.04.04", KEY_READ | KEY_WOW64_32KEY),
+        (
+            r"SOFTWARE\PassThruSupport.04.04",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
+        (
+            r"SOFTWARE\PassThruSupport.04.04",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
     ];
 
     let mut seen_dlls = std::collections::HashSet::new();
@@ -137,5 +149,7 @@ pub fn discover_j2534_dlls() -> Vec<(String, PathBuf)> {
 
 /// Get the default Mongoose Pro JLR DLL path
 pub fn default_mongoose_dll_path() -> PathBuf {
-    PathBuf::from(r"C:\Program Files (x86)\Drew Technologies, Inc\J2534\MongoosePro JLR\monpj432.dll")
+    PathBuf::from(
+        r"C:\Program Files (x86)\Drew Technologies, Inc\J2534\MongoosePro JLR\monpj432.dll",
+    )
 }
