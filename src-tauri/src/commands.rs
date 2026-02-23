@@ -590,6 +590,140 @@ fn read_bcm_info<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &dyn cra
     ]
 }
 
+/// Full BCM DID scan — reads all known BCM DIDs in default + extended session,
+/// saves raw response bytes to bcm_dump.json for offline emulator tuning.
+#[tauri::command]
+pub fn scan_bcm_full(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    scan_bcm_full_inner(&app, &state).map_err(|e| log_err("scan_bcm_full", e))
+}
+
+fn scan_bcm_full_inner(app: &AppHandle, state: &State<'_, AppState>) -> Result<String, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel: &dyn crate::j2534::Channel = conn.channel.as_ref().ok_or("No channel")?;
+    let emulator = conn.emulator_manager.as_ref();
+    let tx = ecu_addr::BCM_TX;
+
+    // All DIDs to scan: standard ISO + BCM-specific from X260 MDX_BCM.exml
+    let all_dids: &[u16] = &[
+        // Standard ISO 14229 DIDs
+        0xF190, 0xF188, 0xF18C, 0xF113, 0xF120, 0xF1A5, 0xF180, 0xF181,
+        0xF187, 0xF189, 0xF191, 0xF1F1,
+        // BCM-specific from MDX_BCM X260
+        0x0528,
+        0x2A00, 0x2A01, 0x2A02, 0x2A03, 0x2A04,
+        0x3008, 0x3009, 0x300A, 0x300B,
+        0x401B, 0x401C, 0x401D, 0x401E,
+        0x4020, 0x4021, 0x4025, 0x4026, 0x4027,
+        0x4028, 0x4029, 0x402A, 0x402C, 0x402E,
+        0x4047, 0x4058, 0x4062, 0x4090, 0x40AB, 0x40DE,
+        0x41C3, 0x41DD,
+        0x5B17, 0xA112,
+        0xC00B, 0xC124, 0xC18C, 0xC190, 0xC25F,
+        0xD00E, 0xD134,
+        0xDD01, 0xDD06,
+        0xDE00, 0xDE01, 0xDE02, 0xDE03, 0xDE04, 0xDE06,
+        0xE103, 0xEE03, 0xEEB0, 0xEEB1, 0xEEB3, 0xEEBB,
+    ];
+
+    emit_log_simple(app, LogDirection::Tx, &[], "=== BCM FULL SCAN START ===");
+
+    // Wake BCM with TesterPresent
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+
+    let mut did_results: Vec<serde_json::Value> = Vec::new();
+    let mut failed_in_default: Vec<u16> = Vec::new();
+
+    // Pass 1: Default session
+    emit_log_simple(app, LogDirection::Tx, &[], "Pass 1: Default session");
+    for &did in all_dids {
+        let req = [0x22, (did >> 8) as u8, (did & 0xFF) as u8];
+        match send_uds_request(app, channel, tx, &req, false, emulator) {
+            Ok(resp) => {
+                let hex: String = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                let ascii: String = resp.iter().skip(3).map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
+                did_results.push(serde_json::json!({
+                    "did": format!("{:04X}", did),
+                    "session": "default",
+                    "raw_hex": hex,
+                    "bytes": resp,
+                    "ascii": ascii.trim(),
+                }));
+            }
+            Err(e) => {
+                failed_in_default.push(did);
+                did_results.push(serde_json::json!({
+                    "did": format!("{:04X}", did),
+                    "session": "default",
+                    "error": e,
+                }));
+            }
+        }
+        // Brief TesterPresent to keep session alive
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    }
+
+    // Pass 2: Extended session — retry failed DIDs
+    if !failed_in_default.is_empty() {
+        emit_log_simple(app, LogDirection::Tx, &[0x10, 0x03], "Pass 2: Extended session");
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        for &did in &failed_in_default {
+            let req = [0x22, (did >> 8) as u8, (did & 0xFF) as u8];
+            match send_uds_request(app, channel, tx, &req, false, emulator) {
+                Ok(resp) => {
+                    let hex: String = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                    let ascii: String = resp.iter().skip(3).map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' }).collect();
+                    // Replace the failed entry with success in extended session
+                    if let Some(entry) = did_results.iter_mut().find(|e| e["did"] == format!("{:04X}", did)) {
+                        *entry = serde_json::json!({
+                            "did": format!("{:04X}", did),
+                            "session": "extended",
+                            "raw_hex": hex,
+                            "bytes": resp,
+                            "ascii": ascii.trim(),
+                        });
+                    }
+                }
+                Err(_) => {} // Still failed — keep original error entry
+            }
+            let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        }
+    }
+
+    // Try CCF routines on BCM
+    emit_log_simple(app, LogDirection::Tx, &[], "Trying BCM CCF routines...");
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+    let ccf_list_resp = send_uds_request(app, channel, tx, &[0x31, 0x01, 0x0E, 0x02], true, emulator);
+    let ccf_retrieve_resp = send_uds_request(app, channel, tx, &[0x31, 0x01, 0x0E, 0x01], true, emulator);
+
+    let ccf = serde_json::json!({
+        "list_0E02": ccf_list_resp.as_ref().ok().map(|r| r.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")),
+        "list_error": ccf_list_resp.as_ref().err(),
+        "retrieve_0E01": ccf_retrieve_resp.as_ref().ok().map(|r| r.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")),
+        "retrieve_error": ccf_retrieve_resp.as_ref().err(),
+    });
+
+    let ok_count = did_results.iter().filter(|e| e.get("raw_hex").is_some()).count();
+    let dump = serde_json::json!({
+        "ecu": "BCM",
+        "vehicle": "X260 MY16 Jaguar XF",
+        "tx_id": format!("0x{:03X}", tx),
+        "rx_id": format!("0x{:03X}", ecu_addr::BCM_RX),
+        "total_dids": all_dids.len(),
+        "ok_count": ok_count,
+        "dids": did_results,
+        "ccf": ccf,
+    });
+
+    let json_str = serde_json::to_string_pretty(&dump).map_err(|e| e.to_string())?;
+    std::fs::write("bcm_dump.json", &json_str).map_err(|e| format!("Write failed: {}", e))?;
+
+    let msg = format!("BCM scan done: {}/{} DIDs OK → bcm_dump.json", ok_count, all_dids.len());
+    emit_log_simple(app, LogDirection::Rx, &[], &msg);
+    Ok(msg)
+}
+
 /// SDD prerequisite flow: TesterPresent → Extended Session → Security Access (if needed)
 /// This is the standard JLR SDD sequence required before executing secured routines.
 fn sdd_prerequisite_flow<R: tauri::Runtime>(
