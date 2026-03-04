@@ -1521,6 +1521,234 @@ fn run_routine_inner(
     })
 }
 
+/// CAN sniff entry — one captured CAN frame
+#[derive(Debug, Serialize)]
+pub struct CanSniffEntry {
+    pub timestamp_ms: u64,
+    pub can_id: String,
+    pub data_hex: String,
+    pub data_len: usize,
+}
+
+/// CAN sniff result
+#[derive(Debug, Serialize)]
+pub struct CanSniffResult {
+    pub routine_response: Option<String>,
+    pub baseline_frames: Vec<CanSniffEntry>,
+    pub after_frames: Vec<CanSniffEntry>,
+    pub new_can_ids: Vec<String>,
+    pub summary: String,
+}
+
+/// Sniff CAN bus during routine 0x6038 execution.
+/// 1. Capture baseline CAN traffic (5 seconds)
+/// 2. Send 0x6038 on ISO15765
+/// 3. Switch to raw CAN and capture traffic (30 seconds)
+/// 4. Compare to find new CAN IDs that appeared during/after 0x6038
+#[tauri::command]
+pub fn can_sniff_routine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CanSniffResult, String> {
+    can_sniff_routine_inner(&app, &state).map_err(|e| log_err("can_sniff_routine", e))
+}
+
+fn can_sniff_routine_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<CanSniffResult, String> {
+    let mut conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_mut().ok_or("Not connected")?;
+
+    // === Phase 1: Baseline CAN capture (5 seconds) ===
+    emit_log_simple(
+        app,
+        LogDirection::Tx,
+        &[],
+        "CAN Sniff: Phase 1 — baseline capture (5s)...",
+    );
+
+    // Close ISO15765 channel to free J2534 slot
+    conn.channel.take();
+
+    let baseline_frames = capture_raw_can(app, conn, 5)?;
+    let baseline_ids: std::collections::HashSet<String> =
+        baseline_frames.iter().map(|f| f.can_id.clone()).collect();
+
+    emit_log_simple(
+        app,
+        LogDirection::Rx,
+        &[],
+        &format!(
+            "Baseline: {} frames, {} unique CAN IDs",
+            baseline_frames.len(),
+            baseline_ids.len()
+        ),
+    );
+
+    // === Phase 2: Send 0x6038 on ISO15765 ===
+    emit_log_simple(
+        app,
+        LogDirection::Tx,
+        &[],
+        "CAN Sniff: Phase 2 — sending 0x6038...",
+    );
+
+    // Reopen ISO15765 channel
+    let channel = conn
+        .device
+        .connect_iso15765(500000)
+        .map_err(|e| format!("Failed to open ISO15765: {}", e))?;
+    let _ = channel.set_iso15765_config(0, 0, 0);
+    channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX)?;
+
+    // TesterPresent + Extended Session
+    let _ = channel.send(&PassThruMsg::new_iso15765(ecu_addr::IMC_TX, &[0x3E, 0x00]), 2000);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = channel.read(500); // drain
+
+    let _ = channel.send(&PassThruMsg::new_iso15765(ecu_addr::IMC_TX, &[0x10, 0x03]), 2000);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = channel.read(500); // drain
+
+    // Send 0x6038 routine start
+    let routine_req = [0x31, 0x01, 0x60, 0x38, 0x01]; // 0x6038 sub=0x01
+    channel.send(&PassThruMsg::new_iso15765(ecu_addr::IMC_TX, &routine_req), 2000)?;
+
+    // Read immediate response (might be pending 0x78 or immediate result)
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut routine_response = None;
+    if let Ok(msgs) = channel.read(2000) {
+        for msg in &msgs {
+            if msg.can_id() == ecu_addr::IMC_RX && msg.data_size > 4 {
+                let payload = msg.payload();
+                let hex: String = payload
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    payload,
+                    &format!("0x6038 immediate response: {}", hex),
+                );
+                routine_response = Some(hex);
+            }
+        }
+    }
+
+    // Close ISO15765 — routine continues executing internally on IMC
+    drop(channel);
+
+    // === Phase 3: CAN capture after 0x6038 (30 seconds) ===
+    emit_log_simple(
+        app,
+        LogDirection::Tx,
+        &[],
+        "CAN Sniff: Phase 3 — capturing CAN after 0x6038 (30s)...",
+    );
+
+    let after_frames = capture_raw_can(app, conn, 30)?;
+    let after_ids: std::collections::HashSet<String> =
+        after_frames.iter().map(|f| f.can_id.clone()).collect();
+
+    // Find CAN IDs that appeared ONLY after 0x6038
+    let mut new_can_ids: Vec<String> = after_ids.difference(&baseline_ids).cloned().collect();
+    new_can_ids.sort();
+
+    let summary = format!(
+        "Baseline: {} frames ({} IDs) | After 0x6038: {} frames ({} IDs) | New IDs: {}",
+        baseline_frames.len(),
+        baseline_ids.len(),
+        after_frames.len(),
+        after_ids.len(),
+        if new_can_ids.is_empty() {
+            "NONE — IMC sends no new CAN traffic during 0x6038".to_string()
+        } else {
+            new_can_ids.join(", ")
+        }
+    );
+
+    emit_log_simple(app, LogDirection::Rx, &[], &summary);
+
+    // === Restore ISO15765 channel ===
+    let channel = conn
+        .device
+        .connect_iso15765(500000)
+        .map_err(|e| format!("Failed to restore ISO15765: {}", e))?;
+    let _ = channel.set_iso15765_config(0, 0, 0);
+    let _ = channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX);
+    let _ = channel.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX);
+    let _ = channel.setup_iso15765_filter(ecu_addr::GWM_TX, ecu_addr::GWM_RX);
+    let _ = channel.setup_iso15765_filter(ecu_addr::IPC_TX, ecu_addr::IPC_RX);
+    conn.channel = Some(channel);
+
+    Ok(CanSniffResult {
+        routine_response,
+        baseline_frames,
+        after_frames,
+        new_can_ids,
+        summary,
+    })
+}
+
+/// Capture raw CAN traffic for the given number of seconds.
+/// Opens a raw CAN channel with PASS filter, reads all messages, closes channel.
+fn capture_raw_can(
+    app: &AppHandle,
+    conn: &mut Connection,
+    seconds: u32,
+) -> Result<Vec<CanSniffEntry>, String> {
+    let can_ch = conn
+        .device
+        .connect_can(500000)
+        .map_err(|e| format!("CAN connect failed: {}", e))?;
+    can_ch
+        .setup_can_pass_filter()
+        .map_err(|e| format!("CAN pass filter failed: {}", e))?;
+
+    let mut frames = Vec::new();
+    let start = std::time::Instant::now();
+    let duration = std::time::Duration::from_secs(seconds as u64);
+    let mut last_log = 0u64;
+
+    while start.elapsed() < duration {
+        if let Ok(msgs) = can_ch.read(200) {
+            for msg in &msgs {
+                if msg.data_size >= 4 {
+                    let can_id = msg.can_id();
+                    let data = &msg.data[4..msg.data_size as usize];
+                    frames.push(CanSniffEntry {
+                        timestamp_ms: start.elapsed().as_millis() as u64,
+                        can_id: format!("0x{:03X}", can_id),
+                        data_hex: data
+                            .iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        data_len: data.len(),
+                    });
+                }
+            }
+        }
+
+        let elapsed_secs = start.elapsed().as_secs();
+        if elapsed_secs > last_log && elapsed_secs % 5 == 0 {
+            last_log = elapsed_secs;
+            emit_log_simple(
+                app,
+                LogDirection::Tx,
+                &[],
+                &format!("CAN capture: {}s / {}s ({} frames)", elapsed_secs, seconds, frames.len()),
+            );
+        }
+    }
+
+    drop(can_ch);
+    Ok(frames)
+}
+
 /// Read CCF (Central Configuration File) from IMC
 /// Read the full CCF data block from one ECU via a DID read.
 /// GWM uses 0xEE00, BCM uses 0xDE00.

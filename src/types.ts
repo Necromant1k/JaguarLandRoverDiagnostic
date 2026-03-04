@@ -45,6 +45,21 @@ export interface BenchModeStatus {
   emulated_ecus: string[];
 }
 
+export interface CanSniffEntry {
+  timestamp_ms: number;
+  can_id: string;
+  data_hex: string;
+  data_len: number;
+}
+
+export interface CanSniffResult {
+  routine_response: string | null;
+  baseline_frames: CanSniffEntry[];
+  after_frames: CanSniffEntry[];
+  new_can_ids: string[];
+  summary: string;
+}
+
 export type Tab = "connect" | "imc" | "bcm" | "gwm" | "ipc";
 
 export interface CcfCompareEntry {

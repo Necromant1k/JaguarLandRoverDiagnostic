@@ -176,6 +176,38 @@ impl J2534Channel {
         Ok(filter_id)
     }
 
+    /// Set up a PASS filter on a raw CAN channel to receive ALL messages
+    pub fn setup_can_pass_filter(&self) -> Result<u32, String> {
+        let mut mask = PassThruMsg::default();
+        mask.protocol_id = PROTOCOL_CAN;
+        mask.data_size = 4;
+        // mask = 0x00000000 → match all CAN IDs
+
+        let mut pattern = PassThruMsg::default();
+        pattern.protocol_id = PROTOCOL_CAN;
+        pattern.data_size = 4;
+        // pattern = 0x00000000
+
+        let mut filter_id: u32 = 0;
+        let ret = unsafe {
+            (self.lib.pass_thru_start_msg_filter)(
+                self.channel_id,
+                FILTER_PASS,
+                &mask,
+                &pattern,
+                std::ptr::null(),
+                &mut filter_id,
+            )
+        };
+        if ret != 0 {
+            return Err(format!(
+                "PassThruStartMsgFilter PASS failed: {}",
+                J2534Error::from_code(ret)
+            ));
+        }
+        Ok(filter_id)
+    }
+
     /// Send a raw CAN frame (8 bytes max, for broadcast on a CAN channel)
     pub fn send_raw_can(&self, can_id: u32, data: &[u8]) -> Result<(), String> {
         let mut msg = PassThruMsg::default();

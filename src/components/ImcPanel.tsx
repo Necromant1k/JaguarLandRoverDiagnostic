@@ -2,7 +2,7 @@ import { useState } from "react";
 import EcuInfoSection from "./EcuInfoSection";
 import RoutinesPanel from "./RoutinesPanel";
 import * as api from "../lib/tauri";
-import type { EcuInfoEntry, CcfCompareEntry } from "../types";
+import type { EcuInfoEntry, CcfCompareEntry, CanSniffResult } from "../types";
 
 interface Props {
   connected: boolean;
@@ -17,6 +17,10 @@ export default function ImcPanel({ connected }: Props) {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
   const [showMismatchOnly, setShowMismatchOnly] = useState(false);
+
+  const [sniffResult, setSniffResult] = useState<CanSniffResult | null>(null);
+  const [sniffLoading, setSniffLoading] = useState(false);
+  const [sniffError, setSniffError] = useState<string | null>(null);
 
   const readCcf = async () => {
     setCcfLoading(true);
@@ -41,6 +45,19 @@ export default function ImcPanel({ connected }: Props) {
       setCompareError(String(e));
     } finally {
       setCompareLoading(false);
+    }
+  };
+
+  const runCanSniff = async () => {
+    setSniffLoading(true);
+    setSniffError(null);
+    try {
+      const data = await api.canSniffRoutine();
+      setSniffResult(data);
+    } catch (e) {
+      setSniffError(String(e));
+    } finally {
+      setSniffLoading(false);
     }
   };
 
@@ -172,6 +189,67 @@ export default function ImcPanel({ connected }: Props) {
             {connected
               ? "Press Compare CCF to read GWM/BCM/IMC and find mismatches"
               : "Connect to compare CCF"}
+          </div>
+        )}
+      </div>
+
+      {/* CAN Sniff during 0x6038 */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-[#cccccc]">CAN Sniff (0x6038 debug)</h3>
+          <button
+            onClick={runCanSniff}
+            disabled={!connected || sniffLoading}
+            className="btn btn-primary text-xs"
+          >
+            {sniffLoading ? "Sniffing (~35s)..." : "Sniff 0x6038"}
+          </button>
+        </div>
+
+        {sniffError && <p className="text-err text-xs">{sniffError}</p>}
+
+        {sniffResult && (
+          <div className="card space-y-2">
+            <p className="text-xs text-[#aaaaaa]">{sniffResult.summary}</p>
+            {sniffResult.routine_response && (
+              <p className="text-xs font-mono text-accent">
+                Response: {sniffResult.routine_response}
+              </p>
+            )}
+            {sniffResult.new_can_ids.length > 0 ? (
+              <div>
+                <p className="text-xs text-[#cccccc] font-semibold">New CAN IDs after 0x6038:</p>
+                <p className="text-xs font-mono text-accent">
+                  {sniffResult.new_can_ids.join(", ")}
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-[#858585]">
+                No new CAN IDs — IMC does not send CAN requests during 0x6038
+              </p>
+            )}
+            <details className="text-xs">
+              <summary className="text-[#858585] cursor-pointer">
+                Baseline: {sniffResult.baseline_frames.length} frames |
+                After: {sniffResult.after_frames.length} frames
+              </summary>
+              <div className="mt-2 max-h-40 overflow-y-auto">
+                <p className="text-[#858585] font-semibold mb-1">After 0x6038 (first 100):</p>
+                {sniffResult.after_frames.slice(0, 100).map((f, i) => (
+                  <div key={i} className="font-mono text-[#aaaaaa]">
+                    {f.timestamp_ms}ms {f.can_id} [{f.data_len}] {f.data_hex}
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
+
+        {!sniffResult && !sniffLoading && !sniffError && (
+          <div className="card text-center text-[#858585] text-sm py-6">
+            {connected
+              ? "Sends 0x6038, then captures all CAN traffic to see what IMC does"
+              : "Connect to sniff CAN"}
           </div>
         )}
       </div>
