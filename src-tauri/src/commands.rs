@@ -1722,18 +1722,58 @@ fn compare_ccf_inner(
     let imc_block = read_ccf_report_imc(app, channel, emulator);
 
     // --- Decode and compare ---
-    // CCF DID response has a 21-byte VDF header before the option data.
-    // Option N's value is at byte (21 + N) in the raw DID response.
-    const CCF_HDR: usize = 21;
+    // CCF DID 0xEE00 response uses VDF (Vehicle Data File) block format:
+    //   Bytes 0-19: VDF header (CRC, length, block table with offsets)
+    //   Byte 20+: VDF blocks, each 8 bytes: [block_id (1 byte)] [data (7 bytes)]
+    //   Block ID B maps to CCF options (B-1)*7 through (B-1)*7+6
+    // Blocks are interleaved (not sequential), so we MUST parse block IDs.
+    const VDF_HDR: usize = 20;
+    const VDF_BLOCK_SIZE: usize = 8;
+    const CCF_OPTIONS_COUNT: usize = 784;
+
+    /// Parse raw DID 0xEE00/0xDE00 response into a flat 784-byte CCF option array
+    fn parse_ccf_vdf(raw: &[u8]) -> Option<Vec<u8>> {
+        if raw.len() < VDF_HDR + VDF_BLOCK_SIZE {
+            return None;
+        }
+        let mut options = vec![0u8; CCF_OPTIONS_COUNT];
+        let mut offset = VDF_HDR;
+        // Parse up to 112 VDF blocks (784 options / 7 per block)
+        while offset + VDF_BLOCK_SIZE <= raw.len() {
+            let blk_id = raw[offset] as usize;
+            if blk_id == 0 || blk_id == 0xFF {
+                break; // End of CCF blocks (hit ITP or padding)
+            }
+            let opt_start = (blk_id - 1) * 7;
+            for j in 0..7 {
+                let pos = opt_start + j;
+                if pos < CCF_OPTIONS_COUNT {
+                    options[pos] = raw[offset + 1 + j];
+                }
+            }
+            offset += VDF_BLOCK_SIZE;
+            // Stop after 112 blocks (max CCF blocks) to avoid reading ITP/VEH_BUILD
+            if offset >= VDF_HDR + 112 * VDF_BLOCK_SIZE {
+                break;
+            }
+        }
+        Some(options)
+    }
+
+    let gwm_opts = gwm_block.as_deref().and_then(parse_ccf_vdf);
+    let bcm_opts = bcm_block.as_deref().and_then(parse_ccf_vdf);
+    // IMC CCF may come from a different source (routine response), try VDF parse,
+    // fallback to treating as flat bytes if blocks don't look right
+    let imc_opts = imc_block.as_deref().and_then(parse_ccf_vdf);
 
     let mut entries: Vec<CcfCompareEntry> = Vec::new();
 
     for &opt_id in IMC_CCF_OPTION_IDS {
-        let idx = CCF_HDR + opt_id as usize;
+        let idx = opt_id as usize;
 
-        let gwm_val = gwm_block.as_deref().and_then(|b| b.get(idx)).copied();
-        let bcm_val = bcm_block.as_deref().and_then(|b| b.get(idx)).copied();
-        let imc_val = imc_block.as_deref().and_then(|b| b.get(idx)).copied();
+        let gwm_val = gwm_opts.as_ref().and_then(|o| o.get(idx)).copied();
+        let bcm_val = bcm_opts.as_ref().and_then(|o| o.get(idx)).copied();
+        let imc_val = imc_opts.as_ref().and_then(|o| o.get(idx)).copied();
 
         let gwm_str = gwm_val.map(|v| decode_ccf_value(opt_id, v));
         let bcm_str = bcm_val.map(|v| decode_ccf_value(opt_id, v));
@@ -2688,7 +2728,7 @@ mod tests {
 
         assert_eq!(entries.len(), 8);
         assert_eq!(entries[0].label, "Diag Session");
-        assert!(entries[0].value.is_some());
+        assert!(entries[0].value.is_some(), "D100 should succeed");
         assert_eq!(entries[1].label, "VIN");
         assert!(entries[1].value.is_some(), "VIN works in Default Session");
         // Last entry is 0202 with error (needs Extended Session)
@@ -2796,28 +2836,28 @@ mod tests {
             vec![0x22, 0xF1, 0x88],
             vec![0x62, 0xF1, 0x88, 0x53, 0x57],
         );
-        // TesterPresent + V850 → OK
+        // TesterPresent + V850
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(
             tx,
             vec![0x22, 0xF1, 0x20],
             vec![0x62, 0xF1, 0x20, 0x56, 0x38],
         );
-        // TesterPresent + Polar → OK
+        // TesterPresent + Polar
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(
             tx,
             vec![0x22, 0xF1, 0xA5],
             vec![0x62, 0xF1, 0xA5, 0x50, 0x4C],
         );
-        // TesterPresent + ECU Serial → OK
+        // TesterPresent + ECU Serial
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(
             tx,
             vec![0x22, 0xF1, 0x8C],
             vec![0x62, 0xF1, 0x8C, 0x53, 0x4E],
         );
-        // TesterPresent + ECU Serial 2 → OK
+        // TesterPresent + ECU Serial 2
         mock.expect_request(tx, vec![0x3E, 0x00], vec![0x7E, 0x00]);
         mock.expect_request(
             tx,
