@@ -2143,10 +2143,10 @@ fn read_ccf_inner(
     // SDD prerequisite flow (no security needed for CCF)
     sdd_prerequisite_flow(app, channel, false, emulator)?;
 
-    // Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC.
-    // With CAN bus emulation, this works on bench too: when IMC sends
-    // ReadDID 0xEE00 to GWM, our emulator responds with real CCF data.
-    {
+    // On bench, skip Retrieve CCF (0x0E00) — MongoosePro single-channel can't
+    // do bus emulation, so IMC can't reach emulated GWM on CAN.
+    // Sending 0x0E00 on bench causes NRC 0x13 which breaks the session.
+    if !bench_mode {
         // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
         let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
         emit_log_simple(
@@ -2222,7 +2222,18 @@ fn read_ccf_inner(
                 );
             }
         }
+    } else {
+        emit_log_simple(
+            app,
+            LogDirection::Tx,
+            &[],
+            "Bench mode: skipping 0x0E00 (MongoosePro single-channel)",
+        );
     }
+
+    // Re-establish session before List CCF (0x0E00 failure can corrupt session)
+    let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false, emulator);
 
     // List CCF (0x0E02) — reads what's stored in IMC flash
     let _ = send_uds_request(
