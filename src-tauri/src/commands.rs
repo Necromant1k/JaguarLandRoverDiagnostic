@@ -411,6 +411,35 @@ pub fn toggle_bench_mode(
                 crate::ecu_emulator::EcuEmulatorManager::new(ecu_ids)
             }
         };
+        // Set up CAN bus emulation filters (reversed ISO15765 filters)
+        // so we can respond to requests from IMC to emulated ECUs.
+        // E.g., when IMC sends ReadDID 0xEE00 to GWM (0x716) during 0x0E00,
+        // our adapter catches it and we respond as GWM (0x71E).
+        if let Some(channel) = conn.channel.as_ref() {
+            for ecu in manager.emulated_ecus() {
+                // Reversed filter: pattern=TX (receive requests TO this ECU),
+                // flow_control=RX (respond AS this ECU)
+                match channel.setup_iso15765_filter(ecu.rx_id(), ecu.tx_id()) {
+                    Ok(_) => {
+                        emit_log_simple(
+                            &app,
+                            LogDirection::Rx,
+                            &[],
+                            &format!(
+                                "CAN bus emulation filter: {} (0x{:03X}→0x{:03X})",
+                                ecu.name(),
+                                ecu.tx_id(),
+                                ecu.rx_id()
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to set up {} bus emulation filter: {}", ecu.name(), e);
+                    }
+                }
+            }
+        }
+
         conn.emulator_manager = Some(manager);
     } else {
         // Cleanup already done above
@@ -2114,9 +2143,10 @@ fn read_ccf_inner(
     // SDD prerequisite flow (no security needed for CCF)
     sdd_prerequisite_flow(app, channel, false, emulator)?;
 
-    // On bench, skip Retrieve CCF (0x0E00) — it downloads from GWM which doesn't exist on bench.
-    // Go directly to List CCF (0x0E02) which reads what's stored in IMC flash.
-    if !bench_mode {
+    // Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC.
+    // With CAN bus emulation, this works on bench too: when IMC sends
+    // ReadDID 0xEE00 to GWM, our emulator responds with real CCF data.
+    {
         // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
         let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
         emit_log_simple(
@@ -2192,13 +2222,6 @@ fn read_ccf_inner(
                 );
             }
         }
-    } else {
-        emit_log_simple(
-            app,
-            LogDirection::Tx,
-            &[],
-            "Bench mode: skipping Retrieve CCF (no GWM on bus)",
-        );
     }
 
     // List CCF (0x0E02) — reads what's stored in IMC flash
@@ -2577,6 +2600,8 @@ fn did_name(did_id: u16) -> &'static str {
 /// Handles NRC 0x21 (busyRepeatRequest) with retries per SDD EXML:
 ///   MAX_BUSY_ATTEMPTS=6, MAX_RETRY_PERIOD=6000ms
 /// Handles NRC 0x78 (responsePending) by continuing to wait.
+/// When CAN bus emulation filters are active, also responds to requests from
+/// other ECUs (e.g. IMC→GWM during 0x0E00 Retrieve CCF).
 fn send_uds_request<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     channel: &dyn crate::j2534::Channel,
@@ -2609,7 +2634,7 @@ fn send_uds_request<R: tauri::Runtime>(
             );
         }
 
-        match send_uds_request_once(app, channel, tx_id, request, wait_pending) {
+        match send_uds_request_once(app, channel, tx_id, request, wait_pending, emulator) {
             Ok(resp) => return Ok(resp),
             Err(e) if e.contains("0x21") && busy_attempt < max_busy_retries => {
                 std::thread::sleep(std::time::Duration::from_secs(1));
@@ -2623,15 +2648,22 @@ fn send_uds_request<R: tauri::Runtime>(
 }
 
 /// Single attempt to send a UDS request and wait for response.
+/// Also handles CAN bus emulation: if a request to an emulated ECU arrives
+/// while waiting (e.g. IMC asks GWM for CCF during 0x0E00), we respond
+/// immediately and continue waiting for the original response.
 fn send_uds_request_once<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     channel: &dyn crate::j2534::Channel,
     tx_id: u32,
     request: &[u8],
     wait_pending: bool,
+    emulator: Option<&EcuEmulatorManager>,
 ) -> Result<Vec<u8>, String> {
     let msg = PassThruMsg::new_iso15765(tx_id, request);
     channel.send(&msg, 2000)?;
+
+    // Expected response CAN ID (ECU response address)
+    let expected_rx_id = tx_id + 8; // Standard: TX + 8 = RX (e.g. 0x7B3→0x7BB)
 
     let timeout = if wait_pending {
         std::time::Duration::from_secs(60)
@@ -2653,6 +2685,35 @@ fn send_uds_request_once<R: tauri::Runtime>(
             let payload = m.payload();
             if payload.is_empty() {
                 continue;
+            }
+            let msg_can_id = m.can_id();
+
+            // CAN bus emulation: respond to requests from other ECUs (e.g. IMC→GWM)
+            if let Some(emu) = emulator {
+                if msg_can_id != expected_rx_id {
+                    if let Some((resp_can_id, resp_payload)) =
+                        emu.try_handle_bus_request(msg_can_id, payload)
+                    {
+                        emit_log_simple(
+                            app,
+                            LogDirection::Rx,
+                            payload,
+                            &format!("BUS→EMU 0x{:03X}", msg_can_id),
+                        );
+                        let resp_msg = PassThruMsg::new_iso15765(resp_can_id, &resp_payload);
+                        if let Err(e) = channel.send(&resp_msg, 2000) {
+                            log::warn!("EMU response send failed: {}", e);
+                        } else {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Tx,
+                                &resp_payload,
+                                &format!("EMU→BUS 0x{:03X}", resp_can_id),
+                            );
+                        }
+                        continue;
+                    }
+                }
             }
 
             emit_log_simple(app, LogDirection::Rx, payload, "");

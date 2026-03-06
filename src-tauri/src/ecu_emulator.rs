@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::j2534::types::*;
 use crate::uds::services::ecu_addr;
 
+// ─── CCF raw data from real car (SAJBL4BVXGCY16353, X260 MY16 Jaguar XF) ──
+static GWM_CCF_RAW: &[u8] = include_bytes!("../assets/gwm_ccf.bin");
+static BCM_CCF_RAW: &[u8] = include_bytes!("../assets/bcm_ccf.bin");
+
 // ─── ECU Identification ──────────────────────────────────────────────
 
 /// Known ECU identifiers with their CAN addresses
@@ -125,6 +129,12 @@ impl EcuHandler for BcmHandler {
                         resp.extend_from_slice(&part);
                         Some(resp)
                     }
+                    // CCF block (DID 0xDE00) — full VDF-format CCF data from real car
+                    0xDE00 => {
+                        let mut resp = vec![0x62, 0xDE, 0x00];
+                        resp.extend_from_slice(BCM_CCF_RAW);
+                        Some(resp)
+                    }
                     0x40AB => Some(vec![0x62, 0x40, 0xAB, 0x04]),
                     0x40DE => Some(vec![0x62, 0x40, 0xDE, 0x01]),
                     0x41DD => Some(vec![0x62, 0x41, 0xDD, 0x00]),
@@ -186,10 +196,69 @@ impl EcuHandler for GwmHandler {
             // DiagnosticSessionControl
             [0x10, session, ..] => Some(vec![0x50, *session, 0x00, 0x19, 0x01, 0xF4]),
 
+            // ReadDataByIdentifier (22 XX XX)
+            // Real car data from SAJBL4BVXGCY16353 (X260 MY16 Jaguar XF)
+            [0x22, did_hi, did_lo, ..] => {
+                let did = ((*did_hi as u16) << 8) | (*did_lo as u16);
+                match did {
+                    // VIN
+                    0xF190 => {
+                        let mut resp = vec![0x62, 0xF1, 0x90];
+                        resp.extend_from_slice(b"SAJBL4BVXGCY16353");
+                        Some(resp)
+                    }
+                    // SW Part (GWM part number, 24 bytes null-padded)
+                    0xF188 => {
+                        let mut resp = vec![0x62, 0xF1, 0x88];
+                        let mut part = b"GX63-14B476-AS".to_vec();
+                        part.resize(24, 0x00);
+                        resp.extend_from_slice(&part);
+                        Some(resp)
+                    }
+                    // HW Part (GWM HW, 24 bytes null-padded)
+                    0xF113 => {
+                        let mut resp = vec![0x62, 0xF1, 0x13];
+                        let mut part = b"GX63-14F642-AK".to_vec();
+                        part.resize(24, 0x00);
+                        resp.extend_from_slice(&part);
+                        Some(resp)
+                    }
+                    // ECU Serial
+                    0xF18C => {
+                        let mut resp = vec![0x62, 0xF1, 0x8C];
+                        resp.extend_from_slice(b"1979149808");
+                        Some(resp)
+                    }
+                    // CCF block (DID 0xEE00) — full VDF-format CCF data from real car
+                    0xEE00 => {
+                        let mut resp = vec![0x62, 0xEE, 0x00];
+                        resp.extend_from_slice(GWM_CCF_RAW);
+                        Some(resp)
+                    }
+                    // Battery Voltage (402A) — 12.4V = 0x07C (millivolts/10)
+                    0x402A => Some(vec![0x62, 0x40, 0x2A, 0x07, 0xC0]),
+                    // Battery SOC (4028) — 85%
+                    0x4028 => Some(vec![0x62, 0x40, 0x28, 0x55]),
+                    // Battery Temp (4029) — 25°C (offset +40 = 0x41)
+                    0x4029 => Some(vec![0x62, 0x40, 0x29, 0x41]),
+                    // Unknown DID → requestOutOfRange
+                    _ => Some(vec![0x7F, 0x22, 0x31]),
+                }
+            }
+
             // SecurityAccess → zero seed
             [0x27, level, ..] => Some(vec![0x67, *level, 0x00, 0x00, 0x00]),
 
-            // Unknown → NRC serviceNotSupported
+            // CommunicationControl (28 XX XX)
+            [0x28, sub_function, ..] => Some(vec![0x68, *sub_function]),
+
+            // WriteDataByIdentifier (2E XX XX ...)
+            [0x2E, did_hi, did_lo, ..] => Some(vec![0x6E, *did_hi, *did_lo]),
+
+            // RoutineControl (31 XX XX XX)
+            [0x31, sub_fn, rid_hi, rid_lo, ..] => Some(vec![0x71, *sub_fn, *rid_hi, *rid_lo]),
+
+            // Unknown service → NRC serviceNotSupported
             [sid, ..] => Some(vec![0x7F, *sid, 0x11]),
 
             _ => None,
@@ -323,6 +392,21 @@ impl EcuEmulatorManager {
         for ecu in &self.emulated_ecus {
             if ecu.tx_id() == tx_id {
                 return create_handler(*ecu).build_response(request);
+            }
+        }
+        None
+    }
+
+    /// Try to handle a UDS request addressed to an emulated ECU on the CAN bus.
+    /// Uses RX address matching (for when IMC sends requests to GWM/BCM).
+    /// tx_on_bus is the CAN ID the request arrived on (e.g. 0x716 for GWM).
+    /// Returns Some((response_can_id, response_payload)) if handled.
+    pub fn try_handle_bus_request(&self, request_can_id: u32, request: &[u8]) -> Option<(u32, Vec<u8>)> {
+        for ecu in &self.emulated_ecus {
+            if ecu.tx_id() == request_can_id {
+                if let Some(response) = create_handler(*ecu).build_response(request) {
+                    return Some((ecu.rx_id(), response));
+                }
             }
         }
         None
@@ -482,6 +566,16 @@ mod tests {
     }
 
     #[test]
+    fn test_bcm_handler_ccf_block() {
+        let handler = BcmHandler;
+        let resp = handler.build_response(&[0x22, 0xDE, 0x00]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        assert_eq!(resp[1], 0xDE);
+        assert_eq!(resp[2], 0x00);
+        assert_eq!(resp.len(), 3 + 1024); // 1024 bytes CCF data
+    }
+
+    #[test]
     fn test_bcm_handler_vin() {
         let handler = BcmHandler;
         let resp = handler.build_response(&[0x22, 0xF1, 0x90]).unwrap();
@@ -580,10 +674,45 @@ mod tests {
     }
 
     #[test]
-    fn test_gwm_handler_unknown_service() {
+    fn test_gwm_handler_vin() {
         let handler = GwmHandler;
         let resp = handler.build_response(&[0x22, 0xF1, 0x90]).unwrap();
-        assert_eq!(resp, vec![0x7F, 0x22, 0x11]);
+        assert_eq!(resp[0], 0x62);
+        let vin = String::from_utf8_lossy(&resp[3..]);
+        assert_eq!(vin, "SAJBL4BVXGCY16353");
+    }
+
+    #[test]
+    fn test_gwm_handler_ccf_block() {
+        let handler = GwmHandler;
+        let resp = handler.build_response(&[0x22, 0xEE, 0x00]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        assert_eq!(resp[1], 0xEE);
+        assert_eq!(resp[2], 0x00);
+        assert_eq!(resp.len(), 3 + 2000); // 2000 bytes CCF data
+    }
+
+    #[test]
+    fn test_gwm_handler_battery_voltage() {
+        let handler = GwmHandler;
+        let resp = handler.build_response(&[0x22, 0x40, 0x2A]).unwrap();
+        assert_eq!(resp[0], 0x62);
+        assert_eq!(resp[1], 0x40);
+        assert_eq!(resp[2], 0x2A);
+    }
+
+    #[test]
+    fn test_gwm_handler_unknown_did() {
+        let handler = GwmHandler;
+        let resp = handler.build_response(&[0x22, 0xFF, 0xFF]).unwrap();
+        assert_eq!(resp, vec![0x7F, 0x22, 0x31]); // requestOutOfRange
+    }
+
+    #[test]
+    fn test_gwm_handler_unknown_service() {
+        let handler = GwmHandler;
+        let resp = handler.build_response(&[0x99]).unwrap();
+        assert_eq!(resp, vec![0x7F, 0x99, 0x11]);
     }
 
     // ─── IPC Handler tests ──────────────────────────────────────
@@ -685,5 +814,51 @@ mod tests {
             .try_handle(ecu_addr::BCM_TX, &[0x22, 0xFF, 0xFF])
             .unwrap();
         assert_eq!(resp, vec![0x7F, 0x22, 0x31]); // NRC requestOutOfRange
+    }
+
+    // ─── try_handle_bus_request tests ────────────────────────────
+
+    #[test]
+    fn test_bus_request_gwm_ccf() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Gwm, EcuId::Bcm],
+        };
+        // IMC sends ReadDID 0xEE00 to GWM (0x716)
+        let result = mgr.try_handle_bus_request(ecu_addr::GWM_TX, &[0x22, 0xEE, 0x00]);
+        assert!(result.is_some());
+        let (resp_id, resp_payload) = result.unwrap();
+        assert_eq!(resp_id, ecu_addr::GWM_RX); // Response from 0x71E
+        assert_eq!(resp_payload[0], 0x62); // Positive response
+        assert_eq!(resp_payload.len(), 3 + 2000); // DID header + 2000 bytes CCF
+    }
+
+    #[test]
+    fn test_bus_request_bcm_ccf() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Gwm, EcuId::Bcm],
+        };
+        // ReadDID 0xDE00 to BCM (0x726)
+        let result = mgr.try_handle_bus_request(ecu_addr::BCM_TX, &[0x22, 0xDE, 0x00]);
+        assert!(result.is_some());
+        let (resp_id, resp_payload) = result.unwrap();
+        assert_eq!(resp_id, ecu_addr::BCM_RX); // Response from 0x72E
+        assert_eq!(resp_payload[0], 0x62);
+        assert_eq!(resp_payload.len(), 3 + 1024); // DID header + 1024 bytes CCF
+    }
+
+    #[test]
+    fn test_bus_request_not_emulated() {
+        let mgr = EcuEmulatorManager {
+            running: Arc::new(AtomicBool::new(false)),
+            handle: None,
+            emulated_ecus: vec![EcuId::Gwm],
+        };
+        // Request to IMC (not emulated) → None
+        let result = mgr.try_handle_bus_request(ecu_addr::IMC_TX, &[0x22, 0xF1, 0x90]);
+        assert!(result.is_none());
     }
 }
