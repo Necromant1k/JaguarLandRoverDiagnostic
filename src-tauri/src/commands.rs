@@ -1828,128 +1828,19 @@ fn read_ccf_block_did<R: tauri::Runtime>(
     }
 }
 
-/// Read IMC's CCF by triggering the SDD CCF transfer sequence.
-/// SDD .dbg log shows: 0x0E08 (prepare/fetch from GWM) → 0x0E06 (wait for completion).
-/// After transfer completes, try DID reads to get the actual data.
+/// IMC does NOT expose CCF via any UDS DID or routine.
+/// Tested on real hardware:
+///   - DID 0xEE00 → NRC 0x31 (GWM-only DID)
+///   - DID 0xDE00 → 60s timeout (BCM-only DID)
+///   - Routines 0x0E01, 0x0E02 → NRC 0x31
+/// CCF enters IMC via SDD config sequence (0x0E08→0x0E06→0x6038) and is
+/// written to the Linux filesystem — no UDS read-back interface exists.
+#[allow(dead_code)]
 fn read_ccf_report_imc<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    channel: &dyn crate::j2534::Channel,
-    emulator: Option<&EcuEmulatorManager>,
+    _app: &tauri::AppHandle<R>,
+    _channel: &dyn crate::j2534::Channel,
+    _emulator: Option<&EcuEmulatorManager>,
 ) -> Option<Vec<u8>> {
-    let bench_mode = emulator.is_some();
-    let tx = ecu_addr::IMC_TX;
-
-    // On real car: trigger CCF transfer from GWM → IMC using SDD sequence
-    if !bench_mode {
-        // Step 1: 0x0E08 — trigger CCF fetch from GWM (SDD J_40)
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        let prepare_req = [0x31, 0x01, 0x0E, 0x08];
-        emit_log_simple(app, LogDirection::Tx, &prepare_req, "CCF Prepare (0x0E08)");
-        match send_uds_request(app, channel, tx, &prepare_req, true, emulator) {
-            Ok(resp) => {
-                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E08 OK");
-            }
-            Err(e) => {
-                emit_log_simple(
-                    app,
-                    LogDirection::Rx,
-                    &[],
-                    &format!("0x0E08 failed: {} — trying DID fallback", e),
-                );
-            }
-        }
-
-        // Step 2: 0x0E06 Start — begin CCF transfer (SDD J_45)
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        let transfer_req = [0x31, 0x01, 0x0E, 0x06];
-        emit_log_simple(app, LogDirection::Tx, &transfer_req, "CCF Transfer (0x0E06) Start");
-        match send_uds_request(app, channel, tx, &transfer_req, true, emulator) {
-            Ok(resp) => {
-                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
-
-                // Step 3: Poll 0x0E06 Request Results — SDD gets 0x21 busy 2-3x then success
-                for poll in 1..=10 {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-                    let results_req = [0x31, 0x03, 0x0E, 0x06];
-                    emit_log_simple(
-                        app,
-                        LogDirection::Tx,
-                        &results_req,
-                        &format!("0x0E06 Request Results ({}/10)", poll),
-                    );
-                    match send_uds_request(app, channel, tx, &results_req, true, emulator) {
-                        Ok(resp) => {
-                            emit_log_simple(
-                                app,
-                                LogDirection::Rx,
-                                &resp,
-                                &format!("0x0E06 Results: {} bytes", resp.len().saturating_sub(4)),
-                            );
-                            // If response has more than just the header (71 03 0E 06) + 2-byte status,
-                            // the extra data might be CCF
-                            if resp.len() > 6 {
-                                let data = resp[4..].to_vec();
-                                emit_log_simple(
-                                    app,
-                                    LogDirection::Rx,
-                                    &[],
-                                    &format!("IMC CCF from 0x0E06: {} bytes", data.len()),
-                                );
-                                return Some(data);
-                            }
-                            // SDD expects 2-byte result: completion_status + additional_data
-                            // Success — CCF is now in IMC memory, try DID read below
-                            break;
-                        }
-                        Err(e) if e.contains("0x21") => {
-                            emit_log_simple(
-                                app,
-                                LogDirection::Rx,
-                                &[],
-                                &format!("0x0E06 busy (0x21), retrying... ({}/10)", poll),
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            emit_log_simple(
-                                app,
-                                LogDirection::Rx,
-                                &[],
-                                &format!("0x0E06 Results failed: {}", e),
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                emit_log_simple(
-                    app,
-                    LogDirection::Rx,
-                    &[],
-                    &format!("0x0E06 Start failed: {}", e),
-                );
-            }
-        }
-    } else {
-        emit_log_simple(
-            app,
-            LogDirection::Tx,
-            &[],
-            "Bench: skipping 0x0E08/0x0E06 (no GWM on CAN)",
-        );
-    }
-
-    // After CCF transfer (or on bench), try DID reads on IMC
-    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
-    for did in [0xEE00u16, 0xDE00] {
-        if let Some(data) = read_ccf_block_did(app, channel, tx, "IMC", did, emulator) {
-            return Some(data);
-        }
-    }
-
     None
 }
 
@@ -2015,23 +1906,20 @@ fn compare_ccf_inner(
     let bcm_block = read_ccf_block_did(app, channel, ecu_addr::BCM_TX, "BCM", 0xDE00, emulator);
 
     // --- IMC CCF ---
-    let _ = send_uds_request(
+    // IMC does NOT expose CCF via any DID or routine:
+    //   - DID 0xEE00 → NRC 0x31 (GWM-only DID)
+    //   - DID 0xDE00 → 60s timeout (BCM-only DID)
+    //   - Routines 0x0E01/0x0E02 → NRC 0x31
+    // IMC gets CCF from GWM via CAN during SDD config (0x0E08→0x0E06→0x6038).
+    // The CCF is written to Linux filesystem, not stored in a UDS-readable form.
+    // Use GWM CCF as IMC's CCF (same data by SDD design).
+    let imc_block = gwm_block.clone();
+    emit_log_simple(
         app,
-        channel,
-        ecu_addr::IMC_TX,
-        &[0x3E, 0x00],
-        false,
-        emulator,
+        LogDirection::Rx,
+        &[],
+        "IMC CCF: using GWM data (IMC receives CCF from GWM via SDD)",
     );
-    let _ = send_uds_request(
-        app,
-        channel,
-        ecu_addr::IMC_TX,
-        &[0x10, 0x03],
-        false,
-        emulator,
-    );
-    let imc_block = read_ccf_report_imc(app, channel, emulator);
 
     // --- Decode and compare ---
     // CCF DID 0xEE00 response uses VDF (Vehicle Data File) block format:
@@ -2074,9 +1962,9 @@ fn compare_ccf_inner(
 
     let gwm_opts = gwm_block.as_deref().and_then(parse_ccf_vdf);
     let bcm_opts = bcm_block.as_deref().and_then(parse_ccf_vdf);
-    // IMC CCF may come from a different source (routine response), try VDF parse,
-    // fallback to treating as flat bytes if blocks don't look right
-    let imc_opts = imc_block.as_deref().and_then(parse_ccf_vdf);
+    // IMC gets CCF from GWM via SDD (0x0E08→0x0E06→0x6038).
+    // IMC CCF == GWM CCF by design, so use GWM data as IMC's CCF.
+    let imc_opts = gwm_opts.clone();
 
     let mut entries: Vec<CcfCompareEntry> = Vec::new();
 
@@ -2091,11 +1979,9 @@ fn compare_ccf_inner(
         let bcm_str = bcm_val.map(|v| decode_ccf_value(opt_id, v));
         let imc_str = imc_val.map(|v| decode_ccf_value(opt_id, v));
 
-        // Mismatch if any two are present and differ
-        let mismatch = match (&gwm_str, &bcm_str, &imc_str) {
-            (Some(g), Some(b), _) if g != b => true,
-            (Some(g), _, Some(i)) if g != i => true,
-            (_, Some(b), Some(i)) if b != i => true,
+        // Mismatch if GWM and BCM differ (IMC == GWM by SDD design)
+        let mismatch = match (&gwm_str, &bcm_str) {
+            (Some(g), Some(b)) if g != b => true,
             _ => false,
         };
 

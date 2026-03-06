@@ -171,7 +171,7 @@ export default function ImcPanel({ connected }: Props) {
                     <td className="py-1.5 pr-3 font-mono text-[#cccccc]">
                       {entry.gwm ?? <span className="text-[#555]">—</span>}
                     </td>
-                    <td className="py-1.5 pr-3 font-mono text-[#cccccc]">
+                    <td className={`py-1.5 pr-3 font-mono ${entry.mismatch ? "text-err" : "text-[#cccccc]"}`}>
                       {entry.bcm ?? <span className="text-[#555]">—</span>}
                     </td>
                     <td className={`py-1.5 font-mono ${entry.mismatch ? "text-err" : "text-[#cccccc]"}`}>
@@ -187,7 +187,7 @@ export default function ImcPanel({ connected }: Props) {
         {compareEntries.length === 0 && !compareLoading && !compareError && (
           <div className="card text-center text-[#858585] text-sm py-6">
             {connected
-              ? "Press Compare CCF to read GWM/BCM/IMC and find mismatches"
+              ? "Press Compare CCF to read GWM/BCM and find mismatches (IMC = GWM source)"
               : "Connect to compare CCF"}
           </div>
         )}
