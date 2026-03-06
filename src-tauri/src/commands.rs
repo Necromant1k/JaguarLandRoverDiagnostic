@@ -1689,7 +1689,7 @@ fn can_sniff_routine_inner(
     let _ = channel.read(500); // drain
 
     // Send 0x6038 routine start
-    let routine_req = [0x31, 0x01, 0x60, 0x38, 0x01]; // 0x6038 sub=0x01
+    let routine_req = [0x31, 0x01, 0x60, 0x38]; // 0x6038 no sub-function data
     channel.send(&PassThruMsg::new_iso15765(ecu_addr::IMC_TX, &routine_req), 2000)?;
 
     // Read immediate response (might be pending 0x78 or immediate result)
