@@ -47,7 +47,7 @@ fn ccf_option_name(option_id: u16) -> String {
     format!("Option {}", option_id)
 }
 
-/// IMC CCF option IDs (from 0x0E02 List CCF response on SAJWA2G78G8V98048)
+/// IMC CCF option IDs (from real car GWM EE00 CCF dump, SAJWA2G78G8V98048)
 const IMC_CCF_OPTION_IDS: &[u16] = &[
     1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 29, 30, 31, 32,
     33, 34, 35, 36, 65, 67, 68, 69, 70, 71, 72, 73, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89,
@@ -1828,69 +1828,124 @@ fn read_ccf_block_did<R: tauri::Runtime>(
     }
 }
 
-/// Read IMC's stored CCF via routine 0x0E01 (Report Central Configuration).
-/// Returns the raw bytes if successful.
+/// Read IMC's CCF by triggering the SDD CCF transfer sequence.
+/// SDD .dbg log shows: 0x0E08 (prepare/fetch from GWM) → 0x0E06 (wait for completion).
+/// After transfer completes, try DID reads to get the actual data.
 fn read_ccf_report_imc<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     channel: &dyn crate::j2534::Channel,
     emulator: Option<&EcuEmulatorManager>,
 ) -> Option<Vec<u8>> {
-    let _ = send_uds_request(
-        app,
-        channel,
-        ecu_addr::IMC_TX,
-        &[0x3E, 0x00],
-        false,
-        emulator,
-    );
-    // Try multiple approaches — log everything for analysis
-    let attempts: &[(&[u8], &str)] = &[
-        (&[0x31, 0x01, 0x0E, 0x01],             "0x0E01 no args"),
-        (&[0x31, 0x01, 0x0E, 0x01, 0x01],       "0x0E01 src=01"),
-        (&[0x31, 0x01, 0x0E, 0x01, 0xEE, 0x00], "0x0E01 DID=EE00"),
-        (&[0x31, 0x01, 0x0E, 0x01, 0x01, 0x70], "0x0E01 blk=01..70"),
-        (&[0x31, 0x01, 0x0E, 0x00, 0xEE, 0x00], "0x0E00 DID=EE00"),
-        (&[0x31, 0x03, 0x0E, 0x00],             "0x0E00 request results"),
-        (&[0x31, 0x01, 0x0E, 0x0B],             "0x0E0B Read Rejected CCF"),
-        (&[0x31, 0x01, 0x0E, 0x0B, 0xEE, 0x00], "0x0E0B DID=EE00"),
-    ];
+    let bench_mode = emulator.is_some();
+    let tx = ecu_addr::IMC_TX;
 
-    for (req, label) in attempts {
-        let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
-        emit_log_simple(app, LogDirection::Tx, req, label);
-        match send_uds_request(app, channel, ecu_addr::IMC_TX, req, true, emulator) {
-            Ok(resp) if resp.len() > 4 => {
-                let data = resp[4..].to_vec();
-                emit_log_simple(
-                    app,
-                    LogDirection::Rx,
-                    &[],
-                    &format!("IMC CCF via {}: {} bytes", label, data.len()),
-                );
-                return Some(data);
-            }
+    // On real car: trigger CCF transfer from GWM → IMC using SDD sequence
+    if !bench_mode {
+        // Step 1: 0x0E08 — trigger CCF fetch from GWM (SDD J_40)
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let prepare_req = [0x31, 0x01, 0x0E, 0x08];
+        emit_log_simple(app, LogDirection::Tx, &prepare_req, "CCF Prepare (0x0E08)");
+        match send_uds_request(app, channel, tx, &prepare_req, true, emulator) {
             Ok(resp) => {
-                emit_log_simple(
-                    app,
-                    LogDirection::Rx,
-                    &resp,
-                    &format!("{} short response", label),
-                );
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E08 OK");
             }
             Err(e) => {
                 emit_log_simple(
                     app,
                     LogDirection::Rx,
                     &[],
-                    &format!("{} failed: {}", label, e),
+                    &format!("0x0E08 failed: {} — trying DID fallback", e),
                 );
             }
         }
+
+        // Step 2: 0x0E06 Start — begin CCF transfer (SDD J_45)
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let transfer_req = [0x31, 0x01, 0x0E, 0x06];
+        emit_log_simple(app, LogDirection::Tx, &transfer_req, "CCF Transfer (0x0E06) Start");
+        match send_uds_request(app, channel, tx, &transfer_req, true, emulator) {
+            Ok(resp) => {
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
+
+                // Step 3: Poll 0x0E06 Request Results — SDD gets 0x21 busy 2-3x then success
+                for poll in 1..=10 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+                    let results_req = [0x31, 0x03, 0x0E, 0x06];
+                    emit_log_simple(
+                        app,
+                        LogDirection::Tx,
+                        &results_req,
+                        &format!("0x0E06 Request Results ({}/10)", poll),
+                    );
+                    match send_uds_request(app, channel, tx, &results_req, true, emulator) {
+                        Ok(resp) => {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &resp,
+                                &format!("0x0E06 Results: {} bytes", resp.len().saturating_sub(4)),
+                            );
+                            // If response has more than just the header (71 03 0E 06) + 2-byte status,
+                            // the extra data might be CCF
+                            if resp.len() > 6 {
+                                let data = resp[4..].to_vec();
+                                emit_log_simple(
+                                    app,
+                                    LogDirection::Rx,
+                                    &[],
+                                    &format!("IMC CCF from 0x0E06: {} bytes", data.len()),
+                                );
+                                return Some(data);
+                            }
+                            // SDD expects 2-byte result: completion_status + additional_data
+                            // Success — CCF is now in IMC memory, try DID read below
+                            break;
+                        }
+                        Err(e) if e.contains("0x21") => {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &[],
+                                &format!("0x0E06 busy (0x21), retrying... ({}/10)", poll),
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &[],
+                                &format!("0x0E06 Results failed: {}", e),
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("0x0E06 Start failed: {}", e),
+                );
+            }
+        }
+    } else {
+        emit_log_simple(
+            app,
+            LogDirection::Tx,
+            &[],
+            "Bench: skipping 0x0E08/0x0E06 (no GWM on CAN)",
+        );
     }
 
-    // Final fallback: DID reads on IMC
-    for did in [0xEE00u16, 0xDE00, 0xEE01, 0xEE70] {
-        if let Some(data) = read_ccf_block_did(app, channel, ecu_addr::IMC_TX, "IMC", did, emulator) {
+    // After CCF transfer (or on bench), try DID reads on IMC
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+    for did in [0xEE00u16, 0xDE00] {
+        if let Some(data) = read_ccf_block_did(app, channel, tx, "IMC", did, emulator) {
             return Some(data);
         }
     }
@@ -2122,7 +2177,8 @@ fn compare_ccf_inner(
     Ok(entries)
 }
 
-/// Flow: Retrieve CCF (0x0E00) to download from network, then List CCF (0x0E02) to read stored data
+/// Flow: SDD sequence 0x0E08 (prepare) → 0x0E06 (transfer + poll) → DID read
+/// Based on SDD .dbg log: J_40=0x0E08, J_45=0x0E06, then J_60=0x6038
 #[tauri::command]
 pub fn read_ccf(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<EcuInfoEntry>, String> {
     read_ccf_inner(&app, &state).map_err(|e| log_err("read_ccf", e))
@@ -2139,78 +2195,112 @@ fn read_ccf_inner(
     let emulator = conn.emulator_manager.as_ref();
 
     let bench_mode = emulator.is_some();
+    let tx = ecu_addr::IMC_TX;
 
     // SDD prerequisite flow (no security needed for CCF)
     sdd_prerequisite_flow(app, channel, false, emulator)?;
 
-    // On bench, skip Retrieve CCF (0x0E00) — MongoosePro single-channel can't
-    // do bus emulation, so IMC can't reach emulated GWM on CAN.
-    // Sending 0x0E00 on bench causes NRC 0x13 which breaks the session.
+    // On real car: use SDD CCF transfer sequence (0x0E08 → 0x0E06)
+    // On bench: skip (no GWM on CAN bus)
     if !bench_mode {
-        // Step 1: Retrieve CCF (0x0E00) — downloads CCF from GWM to IMC
-        let retrieve_req = vec![0x31, 0x01, 0x0E, 0x00];
+        // Step 1: 0x0E08 — Prepare/trigger CCF fetch from GWM (SDD J_40)
+        let prepare_req = vec![0x31, 0x01, 0x0E, 0x08];
         emit_log_simple(
             app,
             LogDirection::Tx,
-            &retrieve_req,
-            "RoutineControl Retrieve CCF (0x0E00)",
+            &prepare_req,
+            "CCF Prepare (0x0E08) — trigger fetch from GWM",
         );
-        match send_uds_request(
-            app,
-            channel,
-            ecu_addr::IMC_TX,
-            &retrieve_req,
-            true,
-            emulator,
-        ) {
+        match send_uds_request(app, channel, tx, &prepare_req, true, emulator) {
             Ok(resp) => {
-                let data = if resp.len() > 4 {
-                    &resp[4..]
-                } else {
-                    &[] as &[u8]
-                };
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &resp,
+                    "0x0E08 OK",
+                );
+            }
+            Err(e) => {
                 emit_log_simple(
                     app,
                     LogDirection::Rx,
                     &[],
-                    &format!("Retrieve CCF OK: {} bytes", data.len()),
+                    &format!("0x0E08 failed: {}", e),
                 );
-                if !data.is_empty() {
-                    return Ok(parse_ccf_entries(data));
-                }
-                // If Retrieve returned no data, try Request Results
-                let _ = send_uds_request(
-                    app,
-                    channel,
-                    ecu_addr::IMC_TX,
-                    &[0x3E, 0x00],
-                    false,
-                    emulator,
-                );
-                let results_req = vec![0x31, 0x03, 0x0E, 0x00];
-                emit_log_simple(
-                    app,
-                    LogDirection::Tx,
-                    &results_req,
-                    "RoutineControl Request Results CCF (0x0E00)",
-                );
-                if let Ok(results_resp) =
-                    send_uds_request(app, channel, ecu_addr::IMC_TX, &results_req, true, emulator)
-                {
-                    let results_data = if results_resp.len() > 4 {
-                        &results_resp[4..]
-                    } else {
-                        &[] as &[u8]
-                    };
-                    if !results_data.is_empty() {
-                        emit_log_simple(
-                            app,
-                            LogDirection::Rx,
-                            &[],
-                            &format!("CCF Results: {} bytes", results_data.len()),
-                        );
-                        return Ok(parse_ccf_entries(results_data));
+            }
+        }
+
+        // Step 2: 0x0E06 Start — begin CCF transfer (SDD J_45)
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let transfer_req = vec![0x31, 0x01, 0x0E, 0x06];
+        emit_log_simple(
+            app,
+            LogDirection::Tx,
+            &transfer_req,
+            "CCF Transfer (0x0E06) Start",
+        );
+        match send_uds_request(app, channel, tx, &transfer_req, true, emulator) {
+            Ok(resp) => {
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
+
+                // Step 3: Poll Request Results — SDD gets 0x21 busy 2-3x then success
+                let mut transfer_ok = false;
+                for poll in 1..=10 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+                    let results_req = vec![0x31, 0x03, 0x0E, 0x06];
+                    emit_log_simple(
+                        app,
+                        LogDirection::Tx,
+                        &results_req,
+                        &format!("0x0E06 Request Results ({}/10)", poll),
+                    );
+                    match send_uds_request(app, channel, tx, &results_req, true, emulator) {
+                        Ok(resp) => {
+                            let extra = resp.len().saturating_sub(4);
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &resp,
+                                &format!("0x0E06 Results OK: {} extra bytes", extra),
+                            );
+                            // If response has CCF data beyond the 2-byte status, return it
+                            if extra > 2 {
+                                let ccf_data = &resp[4..];
+                                save_ccf_dump(app, "IMC", "0x0E06 Results", ccf_data);
+                                return Ok(parse_ccf_entries(ccf_data));
+                            }
+                            transfer_ok = true;
+                            break;
+                        }
+                        Err(e) if e.contains("0x21") => {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &[],
+                                &format!("0x0E06 busy (0x21), retrying... ({}/10)", poll),
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            emit_log_simple(
+                                app,
+                                LogDirection::Rx,
+                                &[],
+                                &format!("0x0E06 Results failed: {}", e),
+                            );
+                            break;
+                        }
                     }
+                }
+
+                if transfer_ok {
+                    emit_log_simple(
+                        app,
+                        LogDirection::Tx,
+                        &[],
+                        "CCF transfer complete, trying DID read...",
+                    );
                 }
             }
             Err(e) => {
@@ -2218,7 +2308,7 @@ fn read_ccf_inner(
                     app,
                     LogDirection::Rx,
                     &[],
-                    &format!("Retrieve CCF failed: {} — trying List", e),
+                    &format!("0x0E06 Start failed: {}", e),
                 );
             }
         }
@@ -2227,86 +2317,94 @@ fn read_ccf_inner(
             app,
             LogDirection::Tx,
             &[],
-            "Bench mode: skipping 0x0E00 (MongoosePro single-channel)",
+            "Bench: skipping 0x0E08/0x0E06 (no GWM on CAN)",
         );
     }
 
-    // Re-establish session before List CCF (0x0E00 failure can corrupt session)
-    let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x3E, 0x00], false, emulator);
-    let _ = send_uds_request(app, channel, ecu_addr::IMC_TX, &[0x10, 0x03], false, emulator);
+    // Re-establish session before DID read
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
 
-    // List CCF (0x0E02) — reads what's stored in IMC flash
-    let _ = send_uds_request(
-        app,
-        channel,
-        ecu_addr::IMC_TX,
-        &[0x3E, 0x00],
-        false,
-        emulator,
-    );
-    let list_req = vec![0x31, 0x01, 0x0E, 0x02];
-    emit_log_simple(
-        app,
-        LogDirection::Tx,
-        &list_req,
-        "RoutineControl List CCF (0x0E02)",
-    );
-    match send_uds_request(app, channel, ecu_addr::IMC_TX, &list_req, true, emulator) {
-        Ok(resp) => {
-            let ccf_data = if resp.len() > 4 {
-                &resp[4..]
-            } else {
-                &[] as &[u8]
-            };
-            emit_log_simple(
-                app,
-                LogDirection::Rx,
-                &[],
-                &format!("List CCF: {} bytes", ccf_data.len()),
-            );
-            // Save raw CCF bytes to file for later analysis
-            if !ccf_data.is_empty() {
-                let hex: String = ccf_data
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let dump = serde_json::json!({
-                    "ecu": "IMC",
-                    "routine": "0x0E02 List CCF",
-                    "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    "bytes": ccf_data.len(),
-                    "raw_hex": hex,
-                    "raw_bytes": ccf_data,
-                });
-                let path = dump_path("imc_ccf_dump.json");
-                if let Ok(json_str) = serde_json::to_string_pretty(&dump) {
-                    let _ = std::fs::write(&path, &json_str);
-                    emit_log_simple(
-                        app,
-                        LogDirection::Rx,
-                        &[],
-                        &format!("CCF saved → {}", path.display()),
-                    );
-                }
+    // Try reading CCF via DID (after transfer, data may be in IMC's readable storage)
+    for did in [0xEE00u16, 0xDE00] {
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        if let Some(data) = read_ccf_block_did(app, channel, tx, "IMC", did, emulator) {
+            save_ccf_dump(app, "IMC", &format!("DID 0x{:04X}", did), &data);
+            return Ok(parse_ccf_entries(&data));
+        }
+    }
+
+    // Final fallback: try legacy routines (0x0E02 List CCF, 0x0E01 Report CCF)
+    for (req, label) in [
+        (vec![0x31, 0x01, 0x0E, 0x02], "0x0E02 List CCF"),
+        (vec![0x31, 0x01, 0x0E, 0x01], "0x0E01 Report CCF"),
+    ] {
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        emit_log_simple(app, LogDirection::Tx, &req, label);
+        match send_uds_request(app, channel, tx, &req, true, emulator) {
+            Ok(resp) if resp.len() > 6 => {
+                let ccf_data = &resp[4..];
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("{}: {} bytes", label, ccf_data.len()),
+                );
+                save_ccf_dump(app, "IMC", label, ccf_data);
+                return Ok(parse_ccf_entries(ccf_data));
             }
-            Ok(parse_ccf_entries(ccf_data))
+            Ok(resp) => {
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &resp,
+                    &format!("{}: short response", label),
+                );
+            }
+            Err(e) => {
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("{} failed: {}", label, e),
+                );
+            }
         }
-        Err(e) => {
-            emit_log_simple(
-                app,
-                LogDirection::Rx,
-                &[],
-                &format!("List CCF failed: {}", e),
-            );
-            Ok(vec![EcuInfoEntry {
-                label: "CCF Status".to_string(),
-                did_hex: "CCF".to_string(),
-                value: None,
-                error: Some(format!("CCF not available: {}", e)),
-                category: "config".to_string(),
-            }])
-        }
+    }
+
+    Ok(vec![EcuInfoEntry {
+        label: "CCF Status".to_string(),
+        did_hex: "CCF".to_string(),
+        value: None,
+        error: Some("CCF not available — IMC may not store CCF in a readable DID".to_string()),
+        category: "config".to_string(),
+    }])
+}
+
+/// Save raw CCF bytes to a JSON dump file for analysis
+fn save_ccf_dump(app: &AppHandle, ecu: &str, source: &str, data: &[u8]) {
+    let hex: String = data
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let dump = serde_json::json!({
+        "ecu": ecu,
+        "source": source,
+        "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "bytes": data.len(),
+        "raw_hex": hex,
+        "raw_bytes": data,
+    });
+    let path = dump_path("imc_ccf_dump.json");
+    if let Ok(json_str) = serde_json::to_string_pretty(&dump) {
+        let _ = std::fs::write(&path, &json_str);
+        emit_log_simple(
+            app,
+            LogDirection::Rx,
+            &[],
+            &format!("CCF saved → {}", path.display()),
+        );
     }
 }
 

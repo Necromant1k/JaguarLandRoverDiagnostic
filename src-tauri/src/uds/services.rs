@@ -56,6 +56,10 @@ pub mod routine {
     pub const RETRIEVE_CCF: u16 = 0x0E00;
     pub const REPORT_CCF: u16 = 0x0E01;
     pub const LIST_CCF: u16 = 0x0E02;
+    /// SDD uses 0x0E08 to trigger CCF fetch from GWM (J_40 in .dbg log)
+    pub const CCF_PREPARE: u16 = 0x0E08;
+    /// SDD uses 0x0E06 to wait for CCF transfer completion (J_45 in .dbg log)
+    pub const CCF_TRANSFER: u16 = 0x0E06;
 }
 
 /// Routine control sub-functions
