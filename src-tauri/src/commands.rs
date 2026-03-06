@@ -2544,6 +2544,49 @@ fn restore_ccf_inner(
 
     emit_log_simple(app, LogDirection::Rx, &[], "═══ RESTORE CCF COMPLETE ═══");
     result.success = result.steps.iter().all(|s| s.success);
+
+    // Save full result to JSON for analysis
+    let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let dump = serde_json::json!({
+        "timestamp": ts,
+        "success": result.success,
+        "pre_flight": result.pre_flight.as_ref().map(|p| serde_json::json!({
+            "gwm_ccf_hex": p.gwm_ccf_hex,
+            "option_467_raw": p.option_467_raw,
+            "option_467_extracted": p.option_467_extracted,
+            "option_467_desc": p.option_467_desc,
+            "warnings": p.warnings,
+        })),
+        "steps": result.steps.iter().map(|s| serde_json::json!({
+            "name": s.name,
+            "success": s.success,
+            "detail": s.detail,
+            "duration_ms": s.duration_ms,
+        })).collect::<Vec<_>>(),
+        "sniff_frames_count": result.sniff_frames.len(),
+        "sniff_frames": result.sniff_frames.iter().take(500).map(|f| serde_json::json!({
+            "timestamp_ms": f.timestamp_ms,
+            "can_id": f.can_id,
+            "data_hex": f.data_hex,
+            "data_len": f.data_len,
+        })).collect::<Vec<_>>(),
+        "post_flight": result.post_flight.as_ref().map(|p| serde_json::json!({
+            "imc_responsive": p.imc_responsive,
+            "dids_read": p.dids_read.iter().map(|d| serde_json::json!({
+                "label": d.label,
+                "did_hex": d.did_hex,
+                "value": d.value,
+                "error": d.error,
+            })).collect::<Vec<_>>(),
+        })),
+    });
+    let filename = format!("restore_ccf_{}.json", ts);
+    if let Ok(json_str) = serde_json::to_string_pretty(&dump) {
+        let path = dump_path(&filename);
+        let _ = std::fs::write(&path, &json_str);
+        emit_log_simple(app, LogDirection::Rx, &[], &format!("Result saved → {}", path.display()));
+    }
+
     Ok(result)
 }
 
