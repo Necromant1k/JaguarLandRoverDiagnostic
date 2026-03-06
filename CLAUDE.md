@@ -86,11 +86,18 @@ Either way, the ERASE step wiped good config and the LEARN step applied wrong va
 - Buying a second working IMC and running 0x6038 — also broke
 - The `restore_ccf` command in the app (same sequence as SDD) — pointless, does the same thing
 
+### IMC Physical Access — NONE
+- **NO SSH/Ethernet** — IMC has no accessible network interface from outside
+- **NO USB** — USB port in armrest is host mode (for phone/iPod), not debug
+- **ONLY CAN** — all communication with IMC is via CAN bus (0x7B3/0x7BB) through J2534
+- 0x603E (SSH enable) is useless without a network path to the IMC
+- Any diagnostics/fixes must go through UDS over CAN exclusively
+
 ### What Needs To Be Done
-1. **Read GWM CCF option 467** from the real car to check if it's correct (0x04/0x05)
-2. If wrong → need to **write correct CCF value to GWM** (WriteDID 0x2E on DID 0xEE00)
-3. If correct → investigate CAN transfer failure between GWM and IMC during 0x0E08/0x0E06
-4. Consider: SSH into IMC via 0x603E routine to manually fix Linux config files
+1. **GWM CCF option 467 is CORRECT** — raw byte 0x14, bits 3:0 = 0x04 = 10" display ✓
+2. Investigate CAN transfer failure between GWM and IMC during 0x0E08/0x0E06
+3. Add full SDD CCF sequence to our app with detailed logging of each step
+4. Read DiagnosisManager response details after 0x6038 — check ERROR bitmask
 
 ### Key Files in RFS3 Image
 ```
