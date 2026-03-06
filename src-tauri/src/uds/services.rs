@@ -287,7 +287,7 @@ pub fn ecu_reset<C: Channel>(
 
 // ─── Routine 0x6038 decode ──────────────────────────────────────────
 
-fn describe_routine_result(
+pub fn describe_routine_result(
     routine_id: u16,
     status: Option<u8>,
     result: Option<u8>,

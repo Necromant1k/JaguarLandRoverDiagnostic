@@ -815,5 +815,185 @@
       "2": "CENTRE_SPEAKER_SMALL",
       "3": "CENTRE_SPEAKER_LARGE"
     }
+  },
+  "127": {
+    "id": 127,
+    "name": "Navigation System",
+    "group": "eCCF127_NAVIGATIONSYSTEM",
+    "values": {
+      "0": "UNDEF",
+      "1": "NO_NAV",
+      "18": "NAV_FULL"
+    }
+  },
+  "157": {
+    "id": 157,
+    "name": "Bluetooth Handsfree",
+    "group": "eCCF157_BLUETOOTHHANDSFREE",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "BT_HFP",
+      "3": "BT_HFP_A2DP",
+      "4": "BT_HFP_A2DP_AVRCP"
+    }
+  },
+  "212": {
+    "id": 212,
+    "name": "Region If DVD",
+    "group": "eCCF212_REGIONIFDVD",
+    "values": {
+      "0": "UNDEF",
+      "1": "REGION_1",
+      "2": "REGION_2",
+      "3": "REGION_3",
+      "4": "REGION_4",
+      "5": "REGION_5",
+      "6": "REGION_6",
+      "7": "REGION_ALL"
+    }
+  },
+  "467": {
+    "id": 467,
+    "name": "Front Display Variant",
+    "group": "eCCF467_FRNTDISPVARIANT",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "8_INCH_SINGLE_VIEW",
+      "3": "8_INCH_DUAL_VIEW",
+      "4": "10_INCH_SINGLE_VIEW",
+      "5": "10_INCH_DUAL_VIEW"
+    }
+  },
+  "468": {
+    "id": 468,
+    "name": "Front AVIO Panel",
+    "group": "eCCF468_FRONTAVIOPANEL",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "BASIC",
+      "3": "PREMIUM",
+      "4": "PREMIUM_NAV",
+      "5": "PREMIUM_NAV_TOUCH",
+      "6": "PREMIUM_NAV_TOUCH_10"
+    }
+  },
+  "49": {
+    "id": 49,
+    "name": "Heated Rear Seat",
+    "group": "eCCF49_HEATEDREARSEAT",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "HEATED_REAR"
+    }
+  },
+  "54": {
+    "id": 54,
+    "name": "Heated Front Seats",
+    "group": "eCCF54_HEATEDFRONTSEATS",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "HEATED_2_STAGE",
+      "3": "HEATED_3_STAGE",
+      "4": "HEATED_COOLED"
+    }
+  },
+  "59": {
+    "id": 59,
+    "name": "Parking Assistance",
+    "group": "eCCF59_PARKINGASSISTANCE",
+    "values": {
+      "0": "UNDEF",
+      "1": "PDC_0x01",
+      "2": "PDC_0x02",
+      "3": "PDC_0x03",
+      "4": "PDC_0x04",
+      "5": "PDC_0x05",
+      "6": "PDC_0x06",
+      "8": "PDC_0x08",
+      "10": "PDC_0x0A"
+    }
+  },
+  "173": {
+    "id": 173,
+    "name": "Rear Entertainment System",
+    "group": "eCCF173_REARENTERTAINMENTSYSTEM",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "3": "ISC_FITTED"
+    }
+  },
+  "449": {
+    "id": 449,
+    "name": "Camera HMI Strategy",
+    "group": "eCCF449_CAMERAHMISTRATEGY",
+    "values": {
+      "0": "UNDEF",
+      "1": "STRATEGY_1",
+      "2": "STRATEGY_0"
+    }
+  },
+  "623": {
+    "id": 623,
+    "name": "Front Cluster Cable Length",
+    "group": "eCCF623_FNTCLUSTERCABLELGTH",
+    "values": {
+      "0": "UNDEF",
+      "2": "LEN_0x02",
+      "3": "LEN_0x03",
+      "4": "LEN_0x04",
+      "5": "LEN_0x05",
+      "6": "LEN_0x06",
+      "7": "LEN_0x07",
+      "8": "LEN_0x08",
+      "14": "LEN_0x0E"
+    }
+  },
+  "641": {
+    "id": 641,
+    "name": "Front Display Variant (Upper/Lower)",
+    "group": "eCCF641_FRNTDISPVARIANT_UPPER_LOWER",
+    "values": {
+      "0": "UNDEF",
+      "1": "HD_UPPER_ONLY",
+      "2": "10_INCH",
+      "3": "SICP_LOWER_5_INCH"
+    }
+  },
+  "642": {
+    "id": 642,
+    "name": "Front Upper Deployable",
+    "group": "eCCF642_FRNTUPPERDEPLOYABLE",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "FITTED"
+    }
+  },
+  "664": {
+    "id": 664,
+    "name": "LHS Steering Wheel Switch Favourite",
+    "group": "eCCF664_LHSWSFAVOURITE",
+    "values": {
+      "0": "UNDEF",
+      "1": "NOT_FITTED",
+      "2": "FITTED"
+    }
+  },
+  "665": {
+    "id": 665,
+    "name": "IMC Cluster APIX Config",
+    "group": "eCCF665_IMCCLUSTERAPIX",
+    "values": {
+      "0": "UNDEF",
+      "2": "CONFIG_0x02",
+      "3": "CONFIG_0x03",
+      "4": "CONFIG_0x04"
+    }
   }
 }

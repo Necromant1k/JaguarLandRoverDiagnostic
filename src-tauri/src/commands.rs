@@ -47,12 +47,17 @@ fn ccf_option_name(option_id: u16) -> String {
     format!("Option {}", option_id)
 }
 
-/// IMC CCF option IDs (from real car GWM EE00 CCF dump, SAJWA2G78G8V98048)
+/// IMC CCF option IDs — all options relevant to IMC variant config (vc_config.json).
+/// Options 467/468 are CRITICAL for display size. 0x6038 reads these from GWM CCF.
+/// If option 467 != 0x04/0x05, IMC defaults to 8-inch layout!
 const IMC_CCF_OPTION_IDS: &[u16] = &[
+    // Standard vehicle options (from real car GWM EE00 CCF dump)
     1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 29, 30, 31, 32,
-    33, 34, 35, 36, 65, 67, 68, 69, 70, 71, 72, 73, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89,
-    90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 105, 107, 108, 109, 110, 111, 112,
-    113, 114, 116, 117, 119,
+    33, 34, 35, 36, 49, 54, 59, 65, 67, 68, 69, 70, 71, 72, 73, 77, 79, 80, 81, 82, 83, 84, 86,
+    87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 105, 107, 108, 109, 110,
+    111, 112, 113, 114, 116, 117, 119,
+    // IMC-specific options from vc_config.json (used by 0x6038)
+    127, 157, 173, 212, 449, 467, 468, 623, 641, 642, 664, 665,
 ];
 
 #[derive(Debug, Serialize)]
@@ -2061,6 +2066,188 @@ fn compare_ccf_inner(
     }
 
     Ok(entries)
+}
+
+/// Restore IMC CCF — runs the full SDD configuration sequence:
+/// J_40: 0x0E08 Start (trigger CCF fetch from GWM via CAN)
+/// J_45: 0x0E06 Start + Request Results polling (wait for transfer)
+/// J_60: 0x6038 Start (Configure Linux to Hardware — apply CCF)
+/// J_80: ECU Reset (0x1101 hard reset)
+/// J_85: 90-second delay for IMC to reboot
+#[tauri::command]
+pub fn restore_ccf(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    restore_ccf_inner(&app, &state).map_err(|e| log_err("restore_ccf", e))
+}
+
+fn restore_ccf_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<String, String> {
+    let conn = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn.as_ref().ok_or("Not connected")?;
+    let channel: &dyn crate::j2534::Channel =
+        conn.channel.as_ref().ok_or("No channel available")?;
+    let emulator = conn.emulator_manager.as_ref();
+    let tx = ecu_addr::IMC_TX;
+
+    if emulator.is_some() {
+        return Err("Restore CCF requires real car (IMC fetches CCF from GWM via CAN)".into());
+    }
+
+    // SDD prerequisite: TesterPresent + Extended Session (no security needed)
+    sdd_prerequisite_flow(app, channel, false, emulator)?;
+
+    // ── J_40: 0x0E08 — Prepare/trigger CCF fetch from GWM ──
+    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 1/4 — Prepare (0x0E08) ═══");
+    let prepare_req = [0x31, 0x01, 0x0E, 0x08];
+    emit_log_simple(app, LogDirection::Tx, &prepare_req, "RoutineControl Start 0x0E08");
+    let resp = send_uds_request(app, channel, tx, &prepare_req, true, emulator)
+        .map_err(|e| format!("0x0E08 Prepare failed: {}", e))?;
+    emit_log_simple(app, LogDirection::Rx, &resp, "0x0E08 OK");
+
+    // SDD waits ~10 timer ticks after 0x0E08
+    emit_log_simple(app, LogDirection::Tx, &[], "Waiting 5s for 0x0E08 to complete...");
+    for i in 1..=5 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        if i % 2 == 0 {
+            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 5s", i));
+        }
+    }
+
+    // ── J_45: 0x0E06 — Transfer CCF ──
+    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 2/4 — Transfer (0x0E06) ═══");
+
+    // Re-establish session (SDD disconnects/reconnects between jobs)
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+    let transfer_req = [0x31, 0x01, 0x0E, 0x06];
+    emit_log_simple(app, LogDirection::Tx, &transfer_req, "RoutineControl Start 0x0E06");
+    let resp = send_uds_request(app, channel, tx, &transfer_req, true, emulator)
+        .map_err(|e| format!("0x0E06 Transfer Start failed: {}", e))?;
+    emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
+
+    // Poll Request Results — SDD log shows 0x21 busy 2-3x then success
+    let mut transfer_ok = false;
+    for poll in 1..=20 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let results_req = [0x31, 0x03, 0x0E, 0x06];
+        emit_log_simple(
+            app,
+            LogDirection::Tx,
+            &results_req,
+            &format!("0x0E06 Request Results ({}/20)", poll),
+        );
+        match send_uds_request(app, channel, tx, &results_req, true, emulator) {
+            Ok(resp) => {
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Results OK");
+                // SDD checks GGDS2_COMPLETION_STATUS (byte 4) and ADDITIONAL_DATA (byte 5)
+                if resp.len() >= 6 {
+                    let status = resp[4];
+                    let additional = resp[5];
+                    emit_log_simple(
+                        app,
+                        LogDirection::Rx,
+                        &[],
+                        &format!("GGDS2_COMPLETION_STATUS=0x{:02X}, ADDITIONAL_DATA=0x{:02X}", status, additional),
+                    );
+                    // SDD branches to J_60 if ADDITIONAL_DATA == 0x00
+                    if additional != 0x00 {
+                        return Err(format!(
+                            "CCF transfer error: status=0x{:02X}, additional=0x{:02X}",
+                            status, additional
+                        ));
+                    }
+                }
+                transfer_ok = true;
+                break;
+            }
+            Err(e) if e.contains("0x21") => {
+                emit_log_simple(
+                    app,
+                    LogDirection::Rx,
+                    &[],
+                    &format!("0x0E06 busy (0x21), waiting... ({}/20)", poll),
+                );
+                continue;
+            }
+            Err(e) => {
+                return Err(format!("0x0E06 Request Results failed: {}", e));
+            }
+        }
+    }
+    if !transfer_ok {
+        return Err("0x0E06 Transfer timed out after 20 polls".into());
+    }
+
+    // ── J_60: 0x6038 — Configure Linux to Hardware ──
+    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 3/4 — Apply Config (0x6038) ═══");
+
+    // Re-establish session
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+    let config_req = [0x31, 0x01, 0x60, 0x38];
+    emit_log_simple(app, LogDirection::Tx, &config_req, "RoutineControl Start 0x6038 (Configure Linux)");
+    let resp = send_uds_request(app, channel, tx, &config_req, true, emulator)
+        .map_err(|e| format!("0x6038 failed: {}", e))?;
+    emit_log_simple(app, LogDirection::Rx, &resp, "0x6038 response");
+
+    // Parse 0x6038 response: STATUS (byte 4), RESULT (byte 5), ERROR (byte 6)
+    let mut config_status = String::from("OK");
+    if resp.len() >= 7 {
+        let status = resp[4];
+        let result = resp[5];
+        let error = resp[6];
+        let desc = crate::uds::services::describe_routine_result(0x6038, Some(status), Some(result), Some(error));
+        emit_log_simple(
+            app,
+            LogDirection::Rx,
+            &[],
+            &format!("0x6038: STATUS=0x{:02X} RESULT=0x{:02X} ERROR=0x{:02X} — {}", status, result, error, desc),
+        );
+        config_status = desc;
+    }
+
+    // SDD waits ~100 timer operations after 0x6038 (about 50-100 seconds)
+    emit_log_simple(app, LogDirection::Tx, &[], "Waiting 30s for 0x6038 to apply...");
+    for i in 1..=30 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if i % 10 == 0 {
+            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 30s", i));
+        }
+    }
+
+    // ── J_80: ECU Reset ──
+    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 4/4 — ECU Reset ═══");
+
+    // Re-establish session for reset
+    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+    let reset_req = [0x11, 0x01]; // Hard reset
+    emit_log_simple(app, LogDirection::Tx, &reset_req, "ECUReset Hard (0x1101)");
+    match send_uds_request(app, channel, tx, &reset_req, false, emulator) {
+        Ok(resp) => emit_log_simple(app, LogDirection::Rx, &resp, "ECUReset OK"),
+        Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("ECUReset: {} (expected — ECU is rebooting)", e)),
+    }
+
+    // J_85: 90-second delay for IMC reboot
+    emit_log_simple(app, LogDirection::Tx, &[], "IMC rebooting — waiting 90s...");
+    for i in 1..=90 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if i % 15 == 0 {
+            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 90s", i));
+        }
+    }
+
+    emit_log_simple(app, LogDirection::Rx, &[], "═══ RESTORE CCF COMPLETE ═══");
+    Ok(format!("CCF restored. 0x6038: {}", config_status))
 }
 
 /// Flow: SDD sequence 0x0E08 (prepare) → 0x0E06 (transfer + poll) → DID read

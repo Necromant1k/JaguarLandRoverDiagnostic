@@ -45,3 +45,67 @@ After each change, you muts commit adn dont forget to keep pulling latest on win
 
 ### Testing
 Never write garbage tests that do not test real flow, application. I dont wanna 200 tests running that do nothing and app doesnt work becuase main flows are not tested at all.
+
+## THE MAIN PROBLEM — IMC Variant Config Broken After 0x6038
+
+### Symptoms
+- Car: X260 Jaguar XF MY16, 2.0L GTDi, VIN SAJBL4BVXGCY16353
+- IMC (InControl Touch Pro Gen2) shows **8" display layout** instead of correct **10"**
+- **No Apple CarPlay**, no heated/ventilated seats, other features missing
+- IMC is in "emergency mode" — all default/fallback values applied
+
+### How It Happened
+1. User ran SDD "InControl Touch Pro variant configuration" on the working car
+2. SDD selected **IMC_ERASE** ("Erase and learn variant configuration") — the only option
+3. SDD ran the full sequence: 0x0E08 → 0x0E06 → 0x6038 → ECU Reset → 90s wait
+4. **ALL steps returned PASS** (0x6038 STATUS=0x10, RESULT=0x01, ERROR=0x00)
+5. After reboot, IMC showed 8" layout, no CarPlay, no heated seats — **broken**
+6. Re-running the same SDD sequence gives PASS again but config stays wrong
+
+### Second IMC Block — Same Result
+- User **bought a used IMC** with known correct working config
+- Ran 0x6038 through SDD on the car → **same result: broke with identical symptoms**
+- Now has **TWO broken IMC blocks**, both showing 8" defaults
+
+### Root Cause Analysis (In Progress)
+The IMC's `vc_config.json` (`/opt/jlr/etc/vconf/vc_config.json`) has:
+- **Default: `DisplaySize=8`** (fallback when CCF option 467 is missing/unmatched)
+- **CCF option 467 (eCCF467_FRNTDISPVARIANT):**
+  - 0x02/0x03 → `DisplaySize=8` (8-inch)
+  - **0x04/0x05 → `DisplaySize=10`** (10-inch, correct for this car)
+
+**Theory**: During 0x0E08→0x0E06, the IMC requests CCF from GWM via CAN. If:
+- (A) GWM CCF has wrong option 467 value → IMC correctly applies wrong config
+- (B) CCF transfer fails silently → IMC falls back to defaults (8-inch)
+Either way, the ERASE step wiped good config and the LEARN step applied wrong values.
+
+**SDD .dbg log** (from `/Users/andrei/Downloads/Untitled (1).dbg`) confirms entire sequence passes on the real car. No errors in any step.
+
+### What We Tried (All Failed)
+- Running 0x6038 via SDD multiple times — PASS but config stays wrong
+- Buying a second working IMC and running 0x6038 — also broke
+- The `restore_ccf` command in the app (same sequence as SDD) — pointless, does the same thing
+
+### What Needs To Be Done
+1. **Read GWM CCF option 467** from the real car to check if it's correct (0x04/0x05)
+2. If wrong → need to **write correct CCF value to GWM** (WriteDID 0x2E on DID 0xEE00)
+3. If correct → investigate CAN transfer failure between GWM and IMC during 0x0E08/0x0E06
+4. Consider: SSH into IMC via 0x603E routine to manually fix Linux config files
+
+### Key Files in RFS3 Image
+```
+/opt/jlr/etc/vconf/vc_config.json          — CCF→boot param mapping (2.5MB)
+/opt/jlr/etc/ci/ci.lcf                     — display layout (hardcoded 888x542 = 8")
+/opt/jlr/bin/DM/NGI-DiagnosisManager       — handles UDS routines including 0x6038
+/opt/jlr/share/graphics/2d/layout_*/        — display layout directories
+/opt/jlr/share/2dgraphicsvariant           — symlink to active layout
+```
+RFS3 image location: `/Users/andrei/Documents/Backup IMC Full Current/RFS3/gitlab-hybrid-imc-x86_32-latest_extracted/`
+
+### All CCF Options Used by IMC 0x6038 (from vc_config.json)
+Options: 1 (VehicleType), 6 (Fuel), 8 (SteeringWheel), 10 (Gearbox), 49 (HeatedRearSeat),
+54 (HeatedFrontSeats), 59 (ParkingAssist), 119 (RadioAmpSpeaker), 127 (Navigation),
+157 (Bluetooth), 173 (RearEntertainment), 212 (DVDRegion), 449 (CameraHMI),
+**467 (FrontDisplayVariant)**, 468 (FrontAVIOPanel), 623 (ClusterCableLength),
+641 (FrontLower/UpperDisplayVariant), 642 (FrontUpperDeployable),
+664 (LHSWSFavourite), 665 (IMCClusterAPIX)
