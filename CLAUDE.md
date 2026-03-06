@@ -102,10 +102,24 @@ Either way, the ERASE step wiped good config and the LEARN step applied wrong va
 ```
 RFS3 image location: `/Users/andrei/Documents/Backup IMC Full Current/RFS3/gitlab-hybrid-imc-x86_32-latest_extracted/`
 
+### CCF Byte Sub-Field Encoding (CCFMDFID) — CRITICAL DISCOVERY
+High-numbered CCF options (449+) pack **multiple sub-fields into a single byte**!
+The CCFMDFID encodes: `(block_number << 8) | ((position_in_block + 2) << 4) | sub_nibble`
+
+Sub-nibble determines which bits of the byte to extract:
+- Standard options (sub_nibble=7): full byte
+- Bit-packed options: sub_nibble = MSB of sub-field
+
+Example: Option 467 byte = 0x14 on real car
+- FRNTDISPVARIANT (sub_nibble 3): bits 3:0 → **0x04 = 10" display** ✓
+- REARDISPVARIANT (sub_nibble 7): bits 7:4 → 0x01
+
+Without sub-field extraction, raw byte 0x14 doesn't match any vc_config.json condition → **defaults to 8" display**!
+
 ### All CCF Options Used by IMC 0x6038 (from vc_config.json)
 Options: 1 (VehicleType), 6 (Fuel), 8 (SteeringWheel), 10 (Gearbox), 49 (HeatedRearSeat),
 54 (HeatedFrontSeats), 59 (ParkingAssist), 119 (RadioAmpSpeaker), 127 (Navigation),
-157 (Bluetooth), 173 (RearEntertainment), 212 (DVDRegion), 449 (CameraHMI),
-**467 (FrontDisplayVariant)**, 468 (FrontAVIOPanel), 623 (ClusterCableLength),
+157 (Bluetooth), 173 (RearEntertainment), 212 (DVDRegion), 449 (CameraHMI, bits 2:0),
+**467 (FrontDisplayVariant, bits 3:0)**, 468 (FrontAVIOPanel, bits 2:0), 623 (CableLength, bits 3:0),
 641 (FrontLower/UpperDisplayVariant), 642 (FrontUpperDeployable),
 664 (LHSWSFavourite), 665 (IMCClusterAPIX)

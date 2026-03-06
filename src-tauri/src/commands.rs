@@ -47,6 +47,27 @@ fn ccf_option_name(option_id: u16) -> String {
     format!("Option {}", option_id)
 }
 
+/// Extract the correct sub-field from a CCF byte for bit-packed options.
+/// High-numbered CCF options (449+) pack multiple sub-fields into a single byte.
+/// CCFMDFID low nibble encodes which bits: sub_nibble 3 → bits 3:0, sub_nibble 7 → bits 7:4, etc.
+fn extract_ccf_subfield(option_id: u16, raw_byte: u8) -> u8 {
+    match option_id {
+        // Option 449: Camera HMI Strategy = bits 2:0 (CCFMDFID 0x4122, sub_nibble 2)
+        449 => raw_byte & 0x07,
+        // Option 467: Front Display Variant = bits 3:0 (CCFMDFID 0x4363, sub_nibble 3)
+        // CRITICAL: raw byte 0x14 → extracted 0x04 = 10" display
+        467 => raw_byte & 0x0F,
+        // Option 468: Front AVIO Panel = bits 2:0 (CCFMDFID 0x4372, sub_nibble 2)
+        468 => raw_byte & 0x07,
+        // Option 623: Display Cable Length = bits 3:0 (CCFMDFID 0x5983, sub_nibble 3)
+        623 => raw_byte & 0x0F,
+        // Option 641: Front Lower Display = bits 3:0 (CCFMDFID 0x5C53, sub_nibble 3)
+        641 => raw_byte & 0x0F,
+        // All other options: full byte (standard encoding, sub_nibble 7)
+        _ => raw_byte,
+    }
+}
+
 /// IMC CCF option IDs — all options relevant to IMC variant config (vc_config.json).
 /// Options 467/468 are CRITICAL for display size. 0x6038 reads these from GWM CCF.
 /// If option 467 != 0x04/0x05, IMC defaults to 8-inch layout!
@@ -1974,11 +1995,14 @@ fn compare_ccf_inner(
     let mut entries: Vec<CcfCompareEntry> = Vec::new();
 
     for &opt_id in IMC_CCF_OPTION_IDS {
-        let idx = opt_id as usize;
+        let idx = (opt_id - 1) as usize;
 
-        let gwm_val = gwm_opts.as_ref().and_then(|o| o.get(idx)).copied();
-        let bcm_val = bcm_opts.as_ref().and_then(|o| o.get(idx)).copied();
-        let imc_val = imc_opts.as_ref().and_then(|o| o.get(idx)).copied();
+        let gwm_val = gwm_opts.as_ref().and_then(|o| o.get(idx)).copied()
+            .map(|v| extract_ccf_subfield(opt_id, v));
+        let bcm_val = bcm_opts.as_ref().and_then(|o| o.get(idx)).copied()
+            .map(|v| extract_ccf_subfield(opt_id, v));
+        let imc_val = imc_opts.as_ref().and_then(|o| o.get(idx)).copied()
+            .map(|v| extract_ccf_subfield(opt_id, v));
 
         let gwm_str = gwm_val.map(|v| decode_ccf_value(opt_id, v));
         let bcm_str = bcm_val.map(|v| decode_ccf_value(opt_id, v));
@@ -2764,8 +2788,16 @@ pub fn list_routines() -> Vec<RoutineInfo> {
 fn did_name(did_id: u16) -> &'static str {
     match did_id {
         0xF190 => "VIN",
-        0xF111 => "Firmware Part",
         0xF188 => "Master RPM Part",
+        0xF18C => "V850 Part",
+        0xF113 => "Polar Part",
+        0xF120 => "ECU Serial",
+        0xF1A5 => "ECU Serial2",
+        0xF180 => "Battery Voltage",
+        0xF181 => "Battery SOC",
+        0xF187 => "Battery Temp",
+        0xF189 => "Door Status",
+        0xF191 => "Fuel Level",
         0xD100 => "Diag Session",
         0x0202 => "IMC Status",
         0x402A => "Battery Voltage",
