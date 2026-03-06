@@ -105,7 +105,7 @@ pub struct DeviceInfo {
     pub dll_path: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct EcuInfoEntry {
     pub label: String,
     pub did_hex: String,
@@ -230,23 +230,9 @@ pub fn connect(
             match dll::J2534Lib::load(&p_str) {
                 Ok(lib) => {
                     let lib = Arc::new(lib);
-                    match crate::j2534::device::J2534Device::open(lib.clone()) {
-                        Ok(device) => {
-                            log::info!("Auto-detect: successfully opened {}", name);
-                            emit_log_simple(
-                                &app,
-                                LogDirection::Rx,
-                                &[],
-                                &format!("Connected to {}", name),
-                            );
-                            found = Some((lib, device, p_str));
-                            break;
-                        }
-                        Err(e) => {
-                            log::warn!("Auto-detect: {} failed to open device: {}", name, e);
-                            last_err = format!("{}: {}", name, e);
-                        }
-                    }
+                    let device = crate::j2534::device::J2534Device::open(lib.clone())?;
+                    found = Some((lib, device, p_str));
+                    break;
                 }
                 Err(e) => {
                     log::warn!("Auto-detect: {} failed to load DLL: {}", name, e);
@@ -1577,7 +1563,7 @@ fn run_routine_inner(
 }
 
 /// CAN sniff entry — one captured CAN frame
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct CanSniffEntry {
     pub timestamp_ms: u64,
     pub can_id: String,
@@ -1593,6 +1579,42 @@ pub struct CanSniffResult {
     pub after_frames: Vec<CanSniffEntry>,
     pub new_can_ids: Vec<String>,
     pub summary: String,
+}
+
+/// Restore CCF result — structured report of the full SDD sequence
+#[derive(Debug, Serialize, Clone)]
+pub struct RestoreCcfResult {
+    pub success: bool,
+    pub steps: Vec<RestoreCcfStep>,
+    pub pre_flight: Option<PreFlightInfo>,
+    pub post_flight: Option<PostFlightInfo>,
+    pub sniff_frames: Vec<CanSniffEntry>,
+}
+
+/// One step of the SDD restore sequence
+#[derive(Debug, Serialize, Clone)]
+pub struct RestoreCcfStep {
+    pub name: String,
+    pub success: bool,
+    pub detail: String,
+    pub duration_ms: u64,
+}
+
+/// Pre-flight: GWM CCF verification before running the sequence
+#[derive(Debug, Serialize, Clone)]
+pub struct PreFlightInfo {
+    pub gwm_ccf_hex: String,
+    pub option_467_raw: Option<u8>,
+    pub option_467_extracted: Option<u8>,
+    pub option_467_desc: String,
+    pub warnings: Vec<String>,
+}
+
+/// Post-flight: IMC DID reads after reboot
+#[derive(Debug, Serialize, Clone)]
+pub struct PostFlightInfo {
+    pub dids_read: Vec<EcuInfoEntry>,
+    pub imc_responsive: bool,
 }
 
 /// Sniff CAN bus during routine 0x6038 execution.
@@ -1805,7 +1827,7 @@ fn capture_raw_can(
 }
 
 /// Read CCF (Central Configuration File) from IMC
-/// Read the full CCF data block from one ECU via a DID read.
+/// Read the full CCF block from one ECU via a DID read.
 /// GWM uses 0xEE00, BCM uses 0xDE00.
 fn read_ccf_block_did<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1868,6 +1890,40 @@ fn read_ccf_report_imc<R: tauri::Runtime>(
     _emulator: Option<&EcuEmulatorManager>,
 ) -> Option<Vec<u8>> {
     None
+}
+
+// ── CCF VDF parsing (shared by compare_ccf and restore_ccf) ──
+const VDF_HDR: usize = 20;
+const VDF_BLOCK_SIZE: usize = 8;
+const CCF_OPTIONS_COUNT: usize = 784;
+
+/// Parse raw DID 0xEE00/0xDE00 response (VDF format) into a flat 784-byte CCF option array.
+/// VDF header = 20 bytes, then 8-byte blocks: [block_id (1)] [data (7)].
+/// Block ID B maps to CCF options (B-1)*7 through (B-1)*7+6.
+fn parse_ccf_vdf(raw: &[u8]) -> Option<Vec<u8>> {
+    if raw.len() < VDF_HDR + VDF_BLOCK_SIZE {
+        return None;
+    }
+    let mut options = vec![0u8; CCF_OPTIONS_COUNT];
+    let mut offset = VDF_HDR;
+    while offset + VDF_BLOCK_SIZE <= raw.len() {
+        let blk_id = raw[offset] as usize;
+        if blk_id == 0 || blk_id == 0xFF {
+            break;
+        }
+        let opt_start = (blk_id - 1) * 7;
+        for j in 0..7 {
+            let pos = opt_start + j;
+            if pos < CCF_OPTIONS_COUNT {
+                options[pos] = raw[offset + 1 + j];
+            }
+        }
+        offset += VDF_BLOCK_SIZE;
+        if offset >= VDF_HDR + 112 * VDF_BLOCK_SIZE {
+            break;
+        }
+    }
+    Some(options)
 }
 
 /// Compare CCF across GWM, BCM, and IMC.
@@ -1948,44 +2004,6 @@ fn compare_ccf_inner(
     );
 
     // --- Decode and compare ---
-    // CCF DID 0xEE00 response uses VDF (Vehicle Data File) block format:
-    //   Bytes 0-19: VDF header (CRC, length, block table with offsets)
-    //   Byte 20+: VDF blocks, each 8 bytes: [block_id (1 byte)] [data (7 bytes)]
-    //   Block ID B maps to CCF options (B-1)*7 through (B-1)*7+6
-    // Blocks are interleaved (not sequential), so we MUST parse block IDs.
-    const VDF_HDR: usize = 20;
-    const VDF_BLOCK_SIZE: usize = 8;
-    const CCF_OPTIONS_COUNT: usize = 784;
-
-    /// Parse raw DID 0xEE00/0xDE00 response into a flat 784-byte CCF option array
-    fn parse_ccf_vdf(raw: &[u8]) -> Option<Vec<u8>> {
-        if raw.len() < VDF_HDR + VDF_BLOCK_SIZE {
-            return None;
-        }
-        let mut options = vec![0u8; CCF_OPTIONS_COUNT];
-        let mut offset = VDF_HDR;
-        // Parse up to 112 VDF blocks (784 options / 7 per block)
-        while offset + VDF_BLOCK_SIZE <= raw.len() {
-            let blk_id = raw[offset] as usize;
-            if blk_id == 0 || blk_id == 0xFF {
-                break; // End of CCF blocks (hit ITP or padding)
-            }
-            let opt_start = (blk_id - 1) * 7;
-            for j in 0..7 {
-                let pos = opt_start + j;
-                if pos < CCF_OPTIONS_COUNT {
-                    options[pos] = raw[offset + 1 + j];
-                }
-            }
-            offset += VDF_BLOCK_SIZE;
-            // Stop after 112 blocks (max CCF blocks) to avoid reading ITP/VEH_BUILD
-            if offset >= VDF_HDR + 112 * VDF_BLOCK_SIZE {
-                break;
-            }
-        }
-        Some(options)
-    }
-
     let gwm_opts = gwm_block.as_deref().and_then(parse_ccf_vdf);
     let bcm_opts = bcm_block.as_deref().and_then(parse_ccf_vdf);
     // IMC gets CCF from GWM via SDD (0x0E08→0x0E06→0x6038).
@@ -2092,186 +2110,441 @@ fn compare_ccf_inner(
     Ok(entries)
 }
 
-/// Restore IMC CCF — runs the full SDD configuration sequence:
+/// Restore IMC CCF — full SDD configuration sequence with diagnostics:
+/// Pre-flight: Read GWM CCF, verify option 467
 /// J_40: 0x0E08 Start (trigger CCF fetch from GWM via CAN)
 /// J_45: 0x0E06 Start + Request Results polling (wait for transfer)
+///       Optional CAN sniff during 0x0E06 to capture GWM→IMC traffic
 /// J_60: 0x6038 Start (Configure Linux to Hardware — apply CCF)
 /// J_80: ECU Reset (0x1101 hard reset)
 /// J_85: 90-second delay for IMC to reboot
+/// Post-flight: Read IMC DIDs to confirm responsiveness
 #[tauri::command]
 pub fn restore_ccf(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    restore_ccf_inner(&app, &state).map_err(|e| log_err("restore_ccf", e))
+    sniff: bool,
+) -> Result<RestoreCcfResult, String> {
+    restore_ccf_inner(&app, &state, sniff).map_err(|e| log_err("restore_ccf", e))
 }
 
 fn restore_ccf_inner(
     app: &AppHandle,
     state: &State<'_, AppState>,
-) -> Result<String, String> {
-    let conn = state.connection.lock().map_err(|e| e.to_string())?;
-    let conn = conn.as_ref().ok_or("Not connected")?;
-    let channel: &dyn crate::j2534::Channel =
-        conn.channel.as_ref().ok_or("No channel available")?;
-    let emulator = conn.emulator_manager.as_ref();
-    let tx = ecu_addr::IMC_TX;
+    sniff: bool,
+) -> Result<RestoreCcfResult, String> {
+    let mut conn_guard = state.connection.lock().map_err(|e| e.to_string())?;
+    let conn = conn_guard.as_mut().ok_or("Not connected")?;
 
-    if emulator.is_some() {
+    if conn.emulator_manager.is_some() {
         return Err("Restore CCF requires real car (IMC fetches CCF from GWM via CAN)".into());
     }
 
-    // SDD prerequisite: TesterPresent + Extended Session (no security needed)
-    sdd_prerequisite_flow(app, channel, false, emulator)?;
+    let mut result = RestoreCcfResult {
+        success: false,
+        steps: Vec::new(),
+        pre_flight: None,
+        post_flight: None,
+        sniff_frames: Vec::new(),
+    };
 
-    // ── J_40: 0x0E08 — Prepare/trigger CCF fetch from GWM ──
-    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 1/4 — Prepare (0x0E08) ═══");
-    let prepare_req = [0x31, 0x01, 0x0E, 0x08];
-    emit_log_simple(app, LogDirection::Tx, &prepare_req, "RoutineControl Start 0x0E08");
-    let resp = send_uds_request(app, channel, tx, &prepare_req, true, emulator)
-        .map_err(|e| format!("0x0E08 Prepare failed: {}", e))?;
-    emit_log_simple(app, LogDirection::Rx, &resp, "0x0E08 OK");
+    // ══════════════════════════════════════════════════════
+    // PRE-FLIGHT: Read GWM CCF and verify option 467
+    // ══════════════════════════════════════════════════════
+    emit_log_simple(app, LogDirection::Tx, &[], "═══ PRE-FLIGHT: Reading GWM CCF ═══");
+    {
+        let channel: &dyn crate::j2534::Channel =
+            conn.channel.as_ref().ok_or("No channel available")?;
+        let emulator = conn.emulator_manager.as_ref();
 
-    // SDD waits ~10 timer ticks after 0x0E08
-    emit_log_simple(app, LogDirection::Tx, &[], "Waiting 5s for 0x0E08 to complete...");
-    for i in 1..=5 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        if i % 2 == 0 {
-            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 5s", i));
-        }
-    }
+        let _ = send_uds_request(app, channel, ecu_addr::GWM_TX, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, ecu_addr::GWM_TX, &[0x10, 0x03], false, emulator);
+        let gwm_block = read_ccf_block_did(app, channel, ecu_addr::GWM_TX, "GWM", 0xEE00, emulator);
 
-    // ── J_45: 0x0E06 — Transfer CCF ──
-    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 2/4 — Transfer (0x0E06) ═══");
+        let mut pre = PreFlightInfo {
+            gwm_ccf_hex: String::new(),
+            option_467_raw: None,
+            option_467_extracted: None,
+            option_467_desc: "Not read".into(),
+            warnings: Vec::new(),
+        };
 
-    // Re-establish session (SDD disconnects/reconnects between jobs)
-    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
-
-    let transfer_req = [0x31, 0x01, 0x0E, 0x06];
-    emit_log_simple(app, LogDirection::Tx, &transfer_req, "RoutineControl Start 0x0E06");
-    let resp = send_uds_request(app, channel, tx, &transfer_req, true, emulator)
-        .map_err(|e| format!("0x0E06 Transfer Start failed: {}", e))?;
-    emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
-
-    // Poll Request Results — SDD log shows 0x21 busy 2-3x then success
-    let mut transfer_ok = false;
-    for poll in 1..=20 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-        let results_req = [0x31, 0x03, 0x0E, 0x06];
-        emit_log_simple(
-            app,
-            LogDirection::Tx,
-            &results_req,
-            &format!("0x0E06 Request Results ({}/20)", poll),
-        );
-        match send_uds_request(app, channel, tx, &results_req, true, emulator) {
-            Ok(resp) => {
-                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Results OK");
-                // SDD checks GGDS2_COMPLETION_STATUS (byte 4) and ADDITIONAL_DATA (byte 5)
-                if resp.len() >= 6 {
-                    let status = resp[4];
-                    let additional = resp[5];
-                    emit_log_simple(
-                        app,
-                        LogDirection::Rx,
-                        &[],
-                        &format!("GGDS2_COMPLETION_STATUS=0x{:02X}, ADDITIONAL_DATA=0x{:02X}", status, additional),
-                    );
-                    // SDD branches to J_60 if ADDITIONAL_DATA == 0x00
-                    if additional != 0x00 {
-                        return Err(format!(
-                            "CCF transfer error: status=0x{:02X}, additional=0x{:02X}",
-                            status, additional
-                        ));
+        if let Some(ref raw) = gwm_block {
+            pre.gwm_ccf_hex = raw.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+            if let Some(opts) = parse_ccf_vdf(raw) {
+                let idx = 466; // option 467 is 1-indexed, array is 0-indexed
+                if let Some(&raw_byte) = opts.get(idx) {
+                    pre.option_467_raw = Some(raw_byte);
+                    let extracted = extract_ccf_subfield(467, raw_byte);
+                    pre.option_467_extracted = Some(extracted);
+                    pre.option_467_desc = decode_ccf_value(467, extracted);
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                        "GWM CCF option 467: raw=0x{:02X}, extracted=0x{:02X} → {}",
+                        raw_byte, extracted, pre.option_467_desc
+                    ));
+                    if extracted != 0x04 && extracted != 0x05 {
+                        let warn = format!(
+                            "Option 467 = 0x{:02X} — NOT 10\" display (expected 0x04 or 0x05)!",
+                            extracted
+                        );
+                        emit_log_simple(app, LogDirection::Rx, &[], &format!("⚠ WARNING: {}", warn));
+                        pre.warnings.push(warn);
                     }
                 }
-                transfer_ok = true;
-                break;
+            } else {
+                pre.warnings.push("Failed to parse GWM CCF VDF format".into());
             }
-            Err(e) if e.contains("0x21") => {
-                emit_log_simple(
-                    app,
-                    LogDirection::Rx,
-                    &[],
-                    &format!("0x0E06 busy (0x21), waiting... ({}/20)", poll),
-                );
-                continue;
+        } else {
+            pre.warnings.push("Failed to read GWM CCF (DID 0xEE00)".into());
+        }
+
+        result.pre_flight = Some(pre);
+    }
+
+    // ══════════════════════════════════════════════════════
+    // STEP 1: 0x0E08 — Prepare/trigger CCF fetch from GWM
+    // ══════════════════════════════════════════════════════
+    {
+        let channel: &dyn crate::j2534::Channel =
+            conn.channel.as_ref().ok_or("No channel available")?;
+        let emulator = conn.emulator_manager.as_ref();
+        let tx = ecu_addr::IMC_TX;
+
+        sdd_prerequisite_flow(app, channel, false, emulator)?;
+
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 1/4 — Prepare (0x0E08) ═══");
+        let prepare_req = [0x31, 0x01, 0x0E, 0x08];
+        let start = std::time::Instant::now();
+        match send_uds_request(app, channel, tx, &prepare_req, true, emulator) {
+            Ok(resp) => {
+                let hex = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E08 OK");
+                result.steps.push(RestoreCcfStep {
+                    name: "0x0E08 Prepare".into(),
+                    success: true,
+                    detail: hex,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                });
             }
             Err(e) => {
-                return Err(format!("0x0E06 Request Results failed: {}", e));
+                result.steps.push(RestoreCcfStep {
+                    name: "0x0E08 Prepare".into(),
+                    success: false,
+                    detail: e.clone(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                });
+                return Err(format!("0x0E08 Prepare failed: {}", e));
+            }
+        }
+
+        // SDD waits ~10 timer ticks after 0x0E08
+        emit_log_simple(app, LogDirection::Tx, &[], "Waiting 5s for 0x0E08 to complete...");
+        for i in 1..=5 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+            if i % 2 == 0 {
+                emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 5s", i));
+            }
+        }
+
+        // ── STEP 2: 0x0E06 — Transfer CCF ──
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 2/4 — Transfer (0x0E06) ═══");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        let transfer_req = [0x31, 0x01, 0x0E, 0x06];
+        emit_log_simple(app, LogDirection::Tx, &transfer_req, "RoutineControl Start 0x0E06");
+        match send_uds_request(app, channel, tx, &transfer_req, true, emulator) {
+            Ok(resp) => {
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Start OK");
+            }
+            Err(e) => {
+                result.steps.push(RestoreCcfStep {
+                    name: "0x0E06 Transfer".into(),
+                    success: false,
+                    detail: e.clone(),
+                    duration_ms: 0,
+                });
+                return Err(format!("0x0E06 Transfer Start failed: {}", e));
             }
         }
     }
-    if !transfer_ok {
-        return Err("0x0E06 Transfer timed out after 20 polls".into());
-    }
 
-    // ── J_60: 0x6038 — Configure Linux to Hardware ──
-    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 3/4 — Apply Config (0x6038) ═══");
+    // ══════════════════════════════════════════════════════
+    // OPTIONAL CAN SNIFF during 0x0E06 transfer
+    // ══════════════════════════════════════════════════════
+    if sniff {
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ CAN SNIFF: Capturing GWM→IMC traffic during 0x0E06 (10s) ═══");
+        // Close ISO15765 to free J2534 slot for raw CAN
+        conn.channel.take();
 
-    // Re-establish session
-    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
-
-    let config_req = [0x31, 0x01, 0x60, 0x38];
-    emit_log_simple(app, LogDirection::Tx, &config_req, "RoutineControl Start 0x6038 (Configure Linux)");
-    let resp = send_uds_request(app, channel, tx, &config_req, true, emulator)
-        .map_err(|e| format!("0x6038 failed: {}", e))?;
-    emit_log_simple(app, LogDirection::Rx, &resp, "0x6038 response");
-
-    // Parse 0x6038 response: STATUS (byte 4), RESULT (byte 5), ERROR (byte 6)
-    let mut config_status = String::from("OK");
-    if resp.len() >= 7 {
-        let status = resp[4];
-        let result = resp[5];
-        let error = resp[6];
-        let desc = crate::uds::services::describe_routine_result(0x6038, Some(status), Some(result), Some(error));
-        emit_log_simple(
-            app,
-            LogDirection::Rx,
-            &[],
-            &format!("0x6038: STATUS=0x{:02X} RESULT=0x{:02X} ERROR=0x{:02X} — {}", status, result, error, desc),
-        );
-        config_status = desc;
-    }
-
-    // SDD waits ~100 timer operations after 0x6038 (about 50-100 seconds)
-    emit_log_simple(app, LogDirection::Tx, &[], "Waiting 30s for 0x6038 to apply...");
-    for i in 1..=30 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        if i % 10 == 0 {
-            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 30s", i));
+        match capture_raw_can(app, conn, 10) {
+            Ok(frames) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                    "CAN sniff captured {} frames", frames.len()
+                ));
+                result.sniff_frames = frames;
+            }
+            Err(e) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("CAN sniff error: {}", e));
+            }
         }
+
+        // Restore ISO15765 channel with all ECU filters
+        let channel = conn.device.connect_iso15765(500000)
+            .map_err(|e| format!("Failed to restore ISO15765 after sniff: {}", e))?;
+        let _ = channel.set_iso15765_config(0, 0, 0);
+        let _ = channel.setup_iso15765_filter(ecu_addr::IMC_TX, ecu_addr::IMC_RX);
+        let _ = channel.setup_iso15765_filter(ecu_addr::BCM_TX, ecu_addr::BCM_RX);
+        let _ = channel.setup_iso15765_filter(ecu_addr::GWM_TX, ecu_addr::GWM_RX);
+        let _ = channel.setup_iso15765_filter(ecu_addr::IPC_TX, ecu_addr::IPC_RX);
+        conn.channel = Some(channel);
     }
 
-    // ── J_80: ECU Reset ──
-    emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 4/4 — ECU Reset ═══");
+    // ══════════════════════════════════════════════════════
+    // POLL 0x0E06 results + STEP 3 (0x6038) + STEP 4 (Reset) + POST-FLIGHT
+    // ══════════════════════════════════════════════════════
+    {
+        let channel: &dyn crate::j2534::Channel =
+            conn.channel.as_ref().ok_or("No channel available")?;
+        let emulator = conn.emulator_manager.as_ref();
+        let tx = ecu_addr::IMC_TX;
 
-    // Re-establish session for reset
-    let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
-    let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+        // Re-establish session (may have expired during CAN sniff)
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
 
-    let reset_req = [0x11, 0x01]; // Hard reset
-    emit_log_simple(app, LogDirection::Tx, &reset_req, "ECUReset Hard (0x1101)");
-    match send_uds_request(app, channel, tx, &reset_req, false, emulator) {
-        Ok(resp) => emit_log_simple(app, LogDirection::Rx, &resp, "ECUReset OK"),
-        Err(e) => emit_log_simple(app, LogDirection::Rx, &[], &format!("ECUReset: {} (expected — ECU is rebooting)", e)),
-    }
+        // Poll 0x0E06 Request Results
+        let transfer_start = std::time::Instant::now();
+        let mut transfer_ok = false;
+        let mut transfer_detail = String::new();
 
-    // J_85: 90-second delay for IMC reboot
-    emit_log_simple(app, LogDirection::Tx, &[], "IMC rebooting — waiting 90s...");
-    for i in 1..=90 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        if i % 15 == 0 {
-            emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 90s", i));
+        for poll in 1..=20 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+            let results_req = [0x31, 0x03, 0x0E, 0x06];
+            emit_log_simple(app, LogDirection::Tx, &results_req, &format!("0x0E06 Results ({}/20)", poll));
+
+            match send_uds_request(app, channel, tx, &results_req, true, emulator) {
+                Ok(resp) => {
+                    let hex = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                    emit_log_simple(app, LogDirection::Rx, &resp, "0x0E06 Results OK");
+                    if resp.len() >= 6 {
+                        let status = resp[4];
+                        let additional = resp[5];
+                        emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                            "COMPLETION_STATUS=0x{:02X}, ADDITIONAL_DATA=0x{:02X}", status, additional
+                        ));
+                        if additional != 0x00 {
+                            let detail = format!("status=0x{:02X}, additional=0x{:02X}", status, additional);
+                            result.steps.push(RestoreCcfStep {
+                                name: "0x0E06 Transfer".into(),
+                                success: false,
+                                detail: detail.clone(),
+                                duration_ms: transfer_start.elapsed().as_millis() as u64,
+                            });
+                            return Err(format!("CCF transfer error: {}", detail));
+                        }
+                    }
+                    transfer_detail = hex;
+                    transfer_ok = true;
+                    break;
+                }
+                Err(e) if e.contains("0x21") => {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("0x0E06 busy ({}/20)", poll));
+                    continue;
+                }
+                Err(e) => {
+                    result.steps.push(RestoreCcfStep {
+                        name: "0x0E06 Transfer".into(),
+                        success: false,
+                        detail: e.clone(),
+                        duration_ms: transfer_start.elapsed().as_millis() as u64,
+                    });
+                    return Err(format!("0x0E06 Request Results failed: {}", e));
+                }
+            }
         }
+
+        if !transfer_ok {
+            result.steps.push(RestoreCcfStep {
+                name: "0x0E06 Transfer".into(),
+                success: false,
+                detail: "Timed out after 20 polls".into(),
+                duration_ms: transfer_start.elapsed().as_millis() as u64,
+            });
+            return Err("0x0E06 Transfer timed out after 20 polls".into());
+        }
+
+        result.steps.push(RestoreCcfStep {
+            name: "0x0E06 Transfer".into(),
+            success: true,
+            detail: transfer_detail,
+            duration_ms: transfer_start.elapsed().as_millis() as u64,
+        });
+
+        // ── STEP 3: 0x6038 — Configure Linux to Hardware ──
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 3/4 — Apply Config (0x6038) ═══");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        let config_req = [0x31, 0x01, 0x60, 0x38];
+        let config_start = std::time::Instant::now();
+        match send_uds_request(app, channel, tx, &config_req, true, emulator) {
+            Ok(resp) => {
+                emit_log_simple(app, LogDirection::Rx, &resp, "0x6038 response");
+                let mut detail = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                if resp.len() >= 7 {
+                    let status = resp[4];
+                    let result_byte = resp[5];
+                    let error = resp[6];
+                    let desc = crate::uds::services::describe_routine_result(
+                        0x6038, Some(status), Some(result_byte), Some(error),
+                    );
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                        "0x6038: STATUS=0x{:02X} RESULT=0x{:02X} ERROR=0x{:02X} — {}",
+                        status, result_byte, error, desc
+                    ));
+                    detail = format!("{} — {}", detail, desc);
+                }
+                result.steps.push(RestoreCcfStep {
+                    name: "0x6038 Configure Linux".into(),
+                    success: true,
+                    detail,
+                    duration_ms: config_start.elapsed().as_millis() as u64,
+                });
+            }
+            Err(e) => {
+                result.steps.push(RestoreCcfStep {
+                    name: "0x6038 Configure Linux".into(),
+                    success: false,
+                    detail: e.clone(),
+                    duration_ms: config_start.elapsed().as_millis() as u64,
+                });
+                return Err(format!("0x6038 failed: {}", e));
+            }
+        }
+
+        // SDD waits ~100 timer operations after 0x6038
+        emit_log_simple(app, LogDirection::Tx, &[], "Waiting 30s for 0x6038 to apply...");
+        for i in 1..=30 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if i % 10 == 0 {
+                emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 30s", i));
+            }
+        }
+
+        // ── STEP 4: ECU Reset ──
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 4/4 — ECU Reset ═══");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        let reset_start = std::time::Instant::now();
+        let reset_req = [0x11, 0x01];
+        emit_log_simple(app, LogDirection::Tx, &reset_req, "ECUReset Hard (0x1101)");
+        match send_uds_request(app, channel, tx, &reset_req, false, emulator) {
+            Ok(resp) => {
+                let hex = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &resp, "ECUReset OK");
+                result.steps.push(RestoreCcfStep {
+                    name: "ECU Reset".into(),
+                    success: true,
+                    detail: hex,
+                    duration_ms: reset_start.elapsed().as_millis() as u64,
+                });
+            }
+            Err(e) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("ECUReset: {} (expected — ECU rebooting)", e));
+                result.steps.push(RestoreCcfStep {
+                    name: "ECU Reset".into(),
+                    success: true, // Expected to error — ECU is rebooting
+                    detail: format!("{} (expected — ECU rebooting)", e),
+                    duration_ms: reset_start.elapsed().as_millis() as u64,
+                });
+            }
+        }
+
+        // J_85: 90-second delay for IMC reboot
+        emit_log_simple(app, LogDirection::Tx, &[], "IMC rebooting — waiting 90s...");
+        for i in 1..=90 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if i % 15 == 0 {
+                emit_log_simple(app, LogDirection::Tx, &[], &format!("{}s / 90s", i));
+            }
+        }
+
+        // ══════════════════════════════════════════════════════
+        // POST-FLIGHT: Read IMC DIDs after reboot
+        // ══════════════════════════════════════════════════════
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ POST-FLIGHT: Reading IMC DIDs after reboot ═══");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        let mut post = PostFlightInfo {
+            dids_read: Vec::new(),
+            imc_responsive: false,
+        };
+
+        let post_dids: &[(u16, &str)] = &[
+            (0xD100, "DiagnosisManager Status"),
+            (0xF188, "Software Version"),
+            (0xF111, "ECU Internal Number"),
+            (0xF18C, "ECU Serial Number"),
+        ];
+
+        for &(did_id, label) in post_dids {
+            let req = [0x22, (did_id >> 8) as u8, (did_id & 0xFF) as u8];
+            match send_uds_request(app, channel, tx, &req, true, emulator) {
+                Ok(resp) if resp.len() > 3 => {
+                    let value_hex = resp[3..].iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect::<Vec<_>>().join(" ");
+                    let ascii: String = resp[3..].iter()
+                        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+                        .collect();
+                    let display = if ascii.chars().filter(|&c| c != '.').count() > ascii.len() / 2 {
+                        format!("{} ({})", ascii.trim(), value_hex)
+                    } else {
+                        value_hex
+                    };
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("DID 0x{:04X}: {}", did_id, display));
+                    post.dids_read.push(EcuInfoEntry {
+                        label: label.to_string(),
+                        did_hex: format!("0x{:04X}", did_id),
+                        value: Some(display),
+                        error: None,
+                        category: "post_flight".into(),
+                    });
+                    post.imc_responsive = true;
+                }
+                Ok(_) => {
+                    post.dids_read.push(EcuInfoEntry {
+                        label: label.to_string(),
+                        did_hex: format!("0x{:04X}", did_id),
+                        value: None,
+                        error: Some("Empty response".into()),
+                        category: "post_flight".into(),
+                    });
+                }
+                Err(e) => {
+                    emit_log_simple(app, LogDirection::Rx, &[], &format!("DID 0x{:04X}: {}", did_id, e));
+                    post.dids_read.push(EcuInfoEntry {
+                        label: label.to_string(),
+                        did_hex: format!("0x{:04X}", did_id),
+                        value: None,
+                        error: Some(e),
+                        category: "post_flight".into(),
+                    });
+                }
+            }
+        }
+
+        result.post_flight = Some(post);
     }
 
     emit_log_simple(app, LogDirection::Rx, &[], "═══ RESTORE CCF COMPLETE ═══");
-    Ok(format!("CCF restored. 0x6038: {}", config_status))
+    result.success = result.steps.iter().all(|s| s.success);
+    Ok(result)
 }
 
 /// Flow: SDD sequence 0x0E08 (prepare) → 0x0E06 (transfer + poll) → DID read
@@ -2477,6 +2750,7 @@ fn read_ccf_inner(
         category: "config".to_string(),
     }])
 }
+
 
 /// Save raw CCF bytes to a JSON dump file for analysis
 fn save_ccf_dump(app: &AppHandle, ecu: &str, source: &str, data: &[u8]) {
@@ -3160,7 +3434,7 @@ mod tests {
 
         assert_eq!(entries.len(), 8);
         assert_eq!(entries[0].label, "Diag Session");
-        assert!(entries[0].value.is_some());
+        assert!(entries[0].value.is_some(), "D100 should succeed");
         assert_eq!(entries[1].label, "VIN");
         assert!(
             entries[1].value.is_some(),

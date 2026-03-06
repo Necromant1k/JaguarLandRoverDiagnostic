@@ -8,6 +8,7 @@ import type {
   BenchModeStatus,
   CcfCompareEntry,
   CanSniffResult,
+  RestoreCcfResult,
 } from "../types";
 
 export async function discoverDevices(): Promise<J2534DeviceEntry[]> {
@@ -69,4 +70,8 @@ export async function compareCcf(): Promise<CcfCompareEntry[]> {
 
 export async function canSniffRoutine(): Promise<CanSniffResult> {
   return invoke<CanSniffResult>("can_sniff_routine");
+}
+
+export async function restoreCcf(sniff: boolean = false): Promise<RestoreCcfResult> {
+  return invoke<RestoreCcfResult>("restore_ccf", { sniff });
 }

@@ -76,6 +76,7 @@ pub fn run() {
             commands::scan_ipc_full,
             commands::compare_ccf,
             commands::can_sniff_routine,
+            commands::restore_ccf,
         ])
         .setup(|_app| {
             log::info!("Tauri setup hook running");

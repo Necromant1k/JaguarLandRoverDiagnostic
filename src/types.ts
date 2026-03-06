@@ -60,6 +60,34 @@ export interface CanSniffResult {
   summary: string;
 }
 
+export interface RestoreCcfResult {
+  success: boolean;
+  steps: RestoreCcfStep[];
+  pre_flight: PreFlightInfo | null;
+  post_flight: PostFlightInfo | null;
+  sniff_frames: CanSniffEntry[];
+}
+
+export interface RestoreCcfStep {
+  name: string;
+  success: boolean;
+  detail: string;
+  duration_ms: number;
+}
+
+export interface PreFlightInfo {
+  gwm_ccf_hex: string;
+  option_467_raw: number | null;
+  option_467_extracted: number | null;
+  option_467_desc: string;
+  warnings: string[];
+}
+
+export interface PostFlightInfo {
+  dids_read: EcuInfoEntry[];
+  imc_responsive: boolean;
+}
+
 export type Tab = "connect" | "imc" | "bcm" | "gwm" | "ipc";
 
 export interface CcfCompareEntry {
