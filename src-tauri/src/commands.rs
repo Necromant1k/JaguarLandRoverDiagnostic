@@ -1587,6 +1587,7 @@ pub struct RestoreCcfResult {
     pub success: bool,
     pub steps: Vec<RestoreCcfStep>,
     pub pre_flight: Option<PreFlightInfo>,
+    pub mid_flight: Option<MidFlightInfo>,
     pub post_flight: Option<PostFlightInfo>,
     pub sniff_frames: Vec<CanSniffEntry>,
 }
@@ -1608,6 +1609,16 @@ pub struct PreFlightInfo {
     pub option_467_extracted: Option<u8>,
     pub option_467_desc: String,
     pub warnings: Vec<String>,
+}
+
+/// Mid-flight: IMC CCF verification after 0x0E06 transfer, before 0x6038
+#[derive(Debug, Serialize, Clone)]
+pub struct MidFlightInfo {
+    pub imc_ccf_0e02_hex: Option<String>,
+    pub imc_ccf_0e02_len: usize,
+    pub imc_ccf_0e01_hex: Option<String>,
+    pub option_pairs: Vec<(u16, u8)>,
+    pub option_467_value: Option<String>,
 }
 
 /// Post-flight: IMC DID reads after reboot
@@ -2144,6 +2155,7 @@ fn restore_ccf_inner(
         success: false,
         steps: Vec::new(),
         pre_flight: None,
+        mid_flight: None,
         post_flight: None,
         sniff_frames: Vec::new(),
     };
@@ -2383,6 +2395,131 @@ fn restore_ccf_inner(
             duration_ms: transfer_start.elapsed().as_millis() as u64,
         });
 
+        // ══════════════════════════════════════════════════════
+        // MID-FLIGHT: Read IMC's cached CCF after 0x0E06 transfer
+        // ══════════════════════════════════════════════════════
+        emit_log_simple(app, LogDirection::Tx, &[], "═══ MID-FLIGHT: Reading IMC CCF after transfer (0x0E02/0x0E01) ═══");
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let _ = send_uds_request(app, channel, tx, &[0x10, 0x03], false, emulator);
+
+        let mut mid = MidFlightInfo {
+            imc_ccf_0e02_hex: None,
+            imc_ccf_0e02_len: 0,
+            imc_ccf_0e01_hex: None,
+            option_pairs: Vec::new(),
+            option_467_value: None,
+        };
+
+        // Try 0x0E02 List CCF
+        let list_req = [0x31, 0x01, 0x0E, 0x02];
+        emit_log_simple(app, LogDirection::Tx, &list_req, "0x0E02 List CCF");
+        match send_uds_request(app, channel, tx, &list_req, true, emulator) {
+            Ok(resp) if resp.len() > 4 => {
+                let ccf_data = &resp[4..];
+                let hex = ccf_data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                    "0x0E02 List CCF: {} bytes of CCF data", ccf_data.len()
+                ));
+                mid.imc_ccf_0e02_len = ccf_data.len();
+                mid.imc_ccf_0e02_hex = Some(hex.clone());
+
+                // Try to parse as (option_id_u8, value_u8) pairs
+                if ccf_data.len() >= 2 {
+                    let mut pairs = Vec::new();
+                    let mut i = 0;
+                    while i + 1 < ccf_data.len() {
+                        let opt_id = ccf_data[i] as u16;
+                        let value = ccf_data[i + 1];
+                        pairs.push((opt_id, value));
+                        i += 2;
+                    }
+                    // Log all pairs for debugging
+                    for &(opt, val) in &pairs {
+                        emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                            "  CCF option {} = 0x{:02X} ({})", opt, val, val
+                        ));
+                    }
+                    // Check if any pair has option ~467
+                    // Option numbers in 0x0E02 might be sequential indices or actual option IDs
+                    // Log specifically looking for display-related values
+                    mid.option_pairs = pairs.clone();
+
+                    // Also try parsing as VDF format (in case 0x0E02 returns raw VDF)
+                    if let Some(vdf_opts) = parse_ccf_vdf(ccf_data) {
+                        if let Some(&val) = vdf_opts.get(467) {
+                            let extracted = val & 0x0F;
+                            let desc = match extracted {
+                                0x02 | 0x03 => "8_INCH",
+                                0x04 => "10_INCH_SINGLE_VIEW",
+                                0x05 => "10_INCH_DUAL_VIEW",
+                                _ => "UNKNOWN",
+                            };
+                            emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                                "*** IMC CCF option 467 (VDF parse): raw=0x{:02X}, extracted=0x{:02X} = {} ***",
+                                val, extracted, desc
+                            ));
+                            mid.option_467_value = Some(format!(
+                                "raw=0x{:02X}, extracted=0x{:02X} ({})", val, extracted, desc
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(resp) => {
+                let hex = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("0x0E02 short response: {}", hex));
+            }
+            Err(e) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("0x0E02 failed: {}", e));
+            }
+        }
+
+        // Try 0x0E01 Report CCF
+        let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
+        let report_req = [0x31, 0x01, 0x0E, 0x01];
+        emit_log_simple(app, LogDirection::Tx, &report_req, "0x0E01 Report CCF");
+        match send_uds_request(app, channel, tx, &report_req, true, emulator) {
+            Ok(resp) if resp.len() > 4 => {
+                let ccf_data = &resp[4..];
+                let hex = ccf_data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                    "0x0E01 Report CCF: {} bytes", ccf_data.len()
+                ));
+                mid.imc_ccf_0e01_hex = Some(hex);
+
+                // Try VDF parse on 0x0E01 response too
+                if mid.option_467_value.is_none() {
+                    if let Some(vdf_opts) = parse_ccf_vdf(ccf_data) {
+                        if let Some(&val) = vdf_opts.get(467) {
+                            let extracted = val & 0x0F;
+                            let desc = match extracted {
+                                0x02 | 0x03 => "8_INCH",
+                                0x04 => "10_INCH_SINGLE_VIEW",
+                                0x05 => "10_INCH_DUAL_VIEW",
+                                _ => "UNKNOWN",
+                            };
+                            emit_log_simple(app, LogDirection::Rx, &[], &format!(
+                                "*** IMC CCF option 467 (0x0E01): raw=0x{:02X}, extracted=0x{:02X} = {} ***",
+                                val, extracted, desc
+                            ));
+                            mid.option_467_value = Some(format!(
+                                "raw=0x{:02X}, extracted=0x{:02X} ({})", val, extracted, desc
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(resp) => {
+                let hex = resp.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("0x0E01 short response: {}", hex));
+            }
+            Err(e) => {
+                emit_log_simple(app, LogDirection::Rx, &[], &format!("0x0E01 failed: {}", e));
+            }
+        }
+
+        result.mid_flight = Some(mid);
+
         // ── STEP 3: 0x6038 — Configure Linux to Hardware ──
         emit_log_simple(app, LogDirection::Tx, &[], "═══ RESTORE CCF: Step 3/4 — Apply Config (0x6038) ═══");
         let _ = send_uds_request(app, channel, tx, &[0x3E, 0x00], false, emulator);
@@ -2563,6 +2700,16 @@ fn restore_ccf_inner(
             "detail": s.detail,
             "duration_ms": s.duration_ms,
         })).collect::<Vec<_>>(),
+        "mid_flight": result.mid_flight.as_ref().map(|m| serde_json::json!({
+            "imc_ccf_0e02_hex": m.imc_ccf_0e02_hex,
+            "imc_ccf_0e02_len": m.imc_ccf_0e02_len,
+            "imc_ccf_0e01_hex": m.imc_ccf_0e01_hex,
+            "option_pairs_count": m.option_pairs.len(),
+            "option_pairs": m.option_pairs.iter().map(|(opt, val)| {
+                serde_json::json!({"option": opt, "value": val, "value_hex": format!("0x{:02X}", val)})
+            }).collect::<Vec<_>>(),
+            "option_467_value": m.option_467_value,
+        })),
         "sniff_frames_count": result.sniff_frames.len(),
         "sniff_frames": result.sniff_frames.iter().take(500).map(|f| serde_json::json!({
             "timestamp_ms": f.timestamp_ms,

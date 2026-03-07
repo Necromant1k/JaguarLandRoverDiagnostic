@@ -64,8 +64,17 @@ export interface RestoreCcfResult {
   success: boolean;
   steps: RestoreCcfStep[];
   pre_flight: PreFlightInfo | null;
+  mid_flight: MidFlightInfo | null;
   post_flight: PostFlightInfo | null;
   sniff_frames: CanSniffEntry[];
+}
+
+export interface MidFlightInfo {
+  imc_ccf_0e02_hex: string | null;
+  imc_ccf_0e02_len: number;
+  imc_ccf_0e01_hex: string | null;
+  option_pairs: { option: number; value: number; value_hex: string }[];
+  option_467_value: string | null;
 }
 
 export interface RestoreCcfStep {
